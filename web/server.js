@@ -1,12 +1,54 @@
 import 'dotenv/config';
 import express from 'express';
 import session from 'express-session';
+import compression from 'compression';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import db from '../src/db/database.js';
+import { createServer } from 'node:http';
+import { Server as SocketIO } from 'socket.io';
+import db, { stmts } from '../src/db/database.js';
+import {
+  LEVELS, LEVEL_LABELS, LEVEL_DESCRIPTIONS, PERMISSION_KEYS, PERMISSION_LABELS,
+  DEFAULT_PERMISSIONS, detectLevelFromRoleNames, getEffectivePermissions,
+  upsertUser, getUserPermissions,
+} from '../src/utils/permissions.js';
+import { askNvidia, buildSystemPrompt, getHistory, addToHistory, updatePlayerProfile } from '../src/utils/ia.js';
+import { calcSegment, segmentEmoji } from '../src/utils/alertes.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const app = express();
+const __dirname  = path.dirname(fileURLToPath(import.meta.url));
+const app        = express();
+const httpServer = createServer(app);
+const io         = new SocketIO(httpServer);
+
+function emit(event, data) { io.emit(event, data); }
+
+// ── Session store SQLite persistant ──────────────────────────────────────────
+class SQLiteStore extends session.Store {
+  constructor() {
+    super();
+    // Nettoyage des sessions expirées toutes les 15 min
+    setInterval(() => {
+      try { stmts.sessionClean.run(Date.now()); } catch {}
+    }, 15 * 60 * 1000).unref();
+  }
+  get(sid, cb) {
+    try {
+      const row = stmts.sessionGet.get(sid, Date.now());
+      cb(null, row ? JSON.parse(row.data) : null);
+    } catch (e) { cb(e); }
+  }
+  set(sid, session, cb) {
+    try {
+      const ttl = session.cookie?.maxAge ? session.cookie.maxAge * 1000 : 86400_000;
+      stmts.sessionSet.run(sid, JSON.stringify(session), Date.now() + ttl);
+      cb(null);
+    } catch (e) { cb(e); }
+  }
+  destroy(sid, cb) {
+    try { stmts.sessionDel.run(sid); cb(null); } catch (e) { cb(e); }
+  }
+  touch(sid, session, cb) { this.set(sid, session, cb); }
+}
 
 const {
   DISCORD_TOKEN, CLIENT_ID, CLIENT_SECRET,
@@ -16,6 +58,7 @@ const {
 } = process.env;
 
 const ROLE_MARCHAND  = '1502788350665556149';
+const ROLE_ADMIN     = '1502722412607836310';
 const WRITE_ROLES    = new Set(['1502722412607836310', '1502788350665556149']);
 const DISCORD_API   = 'https://discord.com/api/v10';
 const DISCORD_CDN   = 'https://cdn.discordapp.com';
@@ -49,21 +92,48 @@ const PROFESSION_GROUPS = {
 };
 
 // ── Middleware ────────────────────────────────────────────────────────────────
+app.use(compression());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(session({
+  store: new SQLiteStore(),
   secret: SESSION_SECRET, resave: false, saveUninitialized: false,
   cookie: { maxAge: 24 * 60 * 60 * 1000, httpOnly: true },
 }));
 
 function requireAuth(req, res, next) {
   if (!req.session?.user) return res.status(401).json({ error: 'Non authentifié' });
+  if (req.session.user.permLevel === 'VISITEUR') return res.status(403).json({ error: 'VISITEUR_BLOCKED' });
   next();
 }
 function requireWrite(req, res, next) {
   if (!req.session?.user) return res.status(401).json({ error: 'Non authentifié' });
   if (!req.session.user.canWrite) return res.status(403).json({ error: 'Accès en lecture seule.' });
   next();
+}
+function requireAdmin(req, res, next) {
+  if (!req.session?.user) return res.status(401).json({ error: 'Non authentifié' });
+  if (!req.session.user.isAdmin) return res.status(403).json({ error: 'Accès réservé aux administrateurs.' });
+  next();
+}
+
+// ── Cache rôles Discord (TTL 30s) ─────────────────────────────────────────────
+const _rolesCache = new Map(); // userId → { roles, isAdmin, canWrite, expires }
+const ROLES_TTL   = 30_000;
+
+async function getDiscordRoles(userId) {
+  const cached = _rolesCache.get(userId);
+  if (cached && cached.expires > Date.now()) return cached;
+  const member = await discordBot('GET', `/guilds/${GUILD_ID}/members/${userId}`);
+  if (!member?.roles) return null;
+  const entry = {
+    roles:    member.roles,
+    isAdmin:  member.roles.includes(ROLE_ADMIN),
+    canWrite: member.roles.some(r => WRITE_ROLES.has(r)),
+    expires:  Date.now() + ROLES_TTL,
+  };
+  _rolesCache.set(userId, entry);
+  return entry;
 }
 
 // ── Discord helper ────────────────────────────────────────────────────────────
@@ -296,19 +366,51 @@ app.get('/auth/callback', async (req, res) => {
       : `${DISCORD_CDN}/embed/avatars/0.png`;
 
     const canWrite = member.roles.some(r => WRITE_ROLES.has(r));
+    const isAdmin  = member.roles.includes(ROLE_ADMIN);
+
+    // Detect RP level from role names and sync to DB
+    const guildRoles = await discordBot('GET', `/guilds/${GUILD_ID}/roles`);
+    const roleIdToName = {};
+    if (Array.isArray(guildRoles)) guildRoles.forEach(r => { roleIdToName[r.id] = r.name; });
+    const memberRoleNames = member.roles.map(id => roleIdToName[id] ?? '').filter(Boolean);
+    const existingPerm = db.prepare('SELECT permission_level FROM user_permissions WHERE user_id=?').get(user.id);
+    const displayName = member.nick || user.global_name || user.username;
+    if (!existingPerm) {
+      const detectedLevel = detectLevelFromRoleNames(memberRoleNames);
+      upsertUser(user.id, user.username, displayName, detectedLevel);
+    } else {
+      // Update username/displayName but keep existing level
+      db.prepare('UPDATE user_permissions SET username=?, display_name=?, updated_at=datetime(\'now\') WHERE user_id=?')
+        .run(user.username, displayName, user.id);
+    }
+    const { level: permLevel, permissions: effectivePerms } = getEffectivePermissions(user.id);
+
     req.session.user = {
       id: user.id, username: user.username,
-      nick: member.nick || user.global_name || user.username,
+      nick: displayName,
       avatar: avatarURL,
       roles: member.roles,
       canWrite,
+      isAdmin,
+      permLevel,
+      permissions: effectivePerms,
     };
     res.redirect('/');
   } catch (err) { console.error('[auth]', err); res.redirect('/?error=auth_failed'); }
 });
 
 app.post('/auth/logout', (req, res) => req.session.destroy(() => res.json({ ok: true })));
-app.get('/api/me', requireAuth, (req, res) => res.json(req.session.user));
+
+app.get('/api/me', requireAuth, async (req, res) => {
+  try {
+    const fresh = await getDiscordRoles(req.session.user.id);
+    if (fresh) {
+      const { level: permLevel, permissions: effectivePerms } = getEffectivePermissions(req.session.user.id);
+      req.session.user = { ...req.session.user, ...fresh, permLevel, permissions: effectivePerms };
+    }
+  } catch {}
+  res.json(req.session.user);
+});
 
 // ── Dashboard stats ───────────────────────────────────────────────────────────
 app.get('/api/stats', requireAuth, (req, res) => {
@@ -385,6 +487,7 @@ app.post('/api/stock', requireWrite, async (req, res) => {
       .run(categorie, ressource, unite, prix_bronze, quantite ?? 0);
     await refreshStockEmbedREST();
     logActivity('stock_ajout', `${ressource} (${categorie}) · ${quantite ?? 0} ${unite} · ${prix_bronze}🟤`, req.session.user?.nick);
+    emit('stock:update', {});
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -402,6 +505,7 @@ app.put('/api/stock/:id', requireWrite, async (req, res) => {
   await refreshStockEmbedREST();
   const changes = sets.map((s, i) => `${s.replace('=?','')}=${p[i]}`).join(', ');
   logActivity('stock_maj', `${stockRow?.ressource ?? req.params.id} · ${changes}`, req.session.user?.nick);
+  emit('stock:update', {});
   res.json({ ok: true });
 });
 
@@ -410,6 +514,7 @@ app.delete('/api/stock/:id', requireWrite, async (req, res) => {
   db.prepare('DELETE FROM stock WHERE id=?').run(req.params.id);
   await refreshStockEmbedREST();
   logActivity('stock_suppression', stockRow?.ressource ?? req.params.id, req.session.user?.nick);
+  emit('stock:update', {});
   res.json({ ok: true });
 });
 
@@ -452,20 +557,26 @@ app.delete('/api/prix/:id', requireWrite, (req, res) => {
 
 // ── Commandes ─────────────────────────────────────────────────────────────────
 app.get('/api/commandes', requireAuth, (req, res) => {
-  const { statut, q } = req.query;
-  let query = 'SELECT * FROM commandes WHERE 1=1';
+  const { statut, q, page = '1', limit = '50' } = req.query;
+  const pageN  = Math.max(1, parseInt(page)  || 1);
+  const limitN = Math.min(200, Math.max(1, parseInt(limit) || 50));
+  const offset = (pageN - 1) * limitN;
+
+  let where = '1=1';
   const p = [];
   if (statut === 'actives') {
-    query += " AND statut IN ('en_attente','en_cours','prete')";
+    where += " AND statut IN ('en_attente','en_cours','prete')";
   } else if (statut && statut !== 'all') {
-    query += ' AND statut=?'; p.push(statut);
+    where += ' AND statut=?'; p.push(statut);
   }
   if (q) {
-    query += ' AND (LOWER(client_pseudo) LIKE ? OR LOWER(ressource) LIKE ?)';
+    where += ' AND (LOWER(client_pseudo) LIKE ? OR LOWER(ressource) LIKE ?)';
     p.push(`%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`);
   }
-  query += ' ORDER BY creee_le DESC LIMIT 200';
-  res.json(db.prepare(query).all(...p));
+
+  const total = db.prepare(`SELECT COUNT(*) as n FROM commandes WHERE ${where}`).get(...p).n;
+  const rows  = db.prepare(`SELECT * FROM commandes WHERE ${where} ORDER BY creee_le DESC LIMIT ? OFFSET ?`).all(...p, limitN, offset);
+  res.json({ rows, total, page: pageN, limit: limitN, pages: Math.ceil(total / limitN) });
 });
 
 app.post('/api/commandes', requireWrite, async (req, res) => {
@@ -520,7 +631,7 @@ app.put('/api/commandes/:id/statut', requireWrite, async (req, res) => {
   };
   if (DM_MSG[statut]) await sendDM(row.client_id, DM_MSG[statut]);
   logActivity('commande_statut', `#${String(row.id).padStart(4,'0')} ${row.ressource} ×${row.quantite} → ${statut}`, req.session.user?.nick);
-
+  emit('commandes:update', { id: row.id, statut });
   res.json({ ok: true });
 });
 
@@ -543,6 +654,7 @@ app.put('/api/tresor', requireWrite, async (req, res) => {
   }
   await refreshLandingEmbedREST();
   logActivity('tresorerie_maj', `${ancien}🟤 → ${nouveau}🟤 (${delta >= 0 ? '+' : ''}${delta}🟤)${motif ? ` · ${motif}` : ''}`, req.session.user?.nick);
+  emit('tresor:update', { bronze: nouveau });
   res.json({ ok: true, bronze: nouveau });
 });
 
@@ -561,6 +673,7 @@ app.post('/api/tresorerie/mouvement', requireWrite, async (req, res) => {
     .run(Math.round(delta), nouveau, motif || '', req.session.user?.nick || '');
   await refreshLandingEmbedREST();
   logActivity('tresorerie_mouvement', `${delta >= 0 ? '+' : ''}${Math.round(delta)}🟤 → solde ${nouveau}🟤${motif ? ` · ${motif}` : ''}`, req.session.user?.nick);
+  emit('tresor:update', { bronze: nouveau });
   res.json({ ok: true, bronze: nouveau });
 });
 
@@ -677,6 +790,7 @@ app.put('/api/offres_vente/:id/statut', requireWrite, async (req, res) => {
     db.prepare('DELETE FROM forum_posts_vendeurs WHERE vendeur_id=?').run(offreRow.vendeur_id);
   }
 
+  emit('offres:update', { id: parseInt(req.params.id), statut });
   res.json({ ok: true });
 });
 
@@ -869,12 +983,317 @@ app.delete('/api/tarifs/:id', requireWrite, (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Permissions ───────────────────────────────────────────────────────────────
+app.get('/api/permissions/meta', requireAuth, (_req, res) => {
+  res.json({ LEVELS, LEVEL_LABELS, LEVEL_DESCRIPTIONS, PERMISSION_KEYS, PERMISSION_LABELS, DEFAULT_PERMISSIONS });
+});
+
+app.get('/api/permissions', requireAuth, (_req, res) => {
+  const rows = db.prepare('SELECT * FROM user_permissions ORDER BY permission_level DESC, display_name ASC').all();
+  const result = rows.map(r => {
+    let overrides = {};
+    try { overrides = JSON.parse(r.permissions); } catch {}
+    const defaults = DEFAULT_PERMISSIONS[r.permission_level] ?? DEFAULT_PERMISSIONS.VISITEUR;
+    const effective = { ...defaults, ...overrides };
+    return { ...r, overrides, effective };
+  });
+  res.json(result);
+});
+
+app.get('/api/members', requireAuth, async (_req, res) => {
+  try {
+    // Fetch all guild members (up to 1000)
+    const members = await discordBot('GET', `/guilds/${GUILD_ID}/members?limit=1000`);
+    if (!Array.isArray(members)) return res.json([]);
+
+    const guildRoles = await discordBot('GET', `/guilds/${GUILD_ID}/roles`);
+    const roleIdToName = {};
+    if (Array.isArray(guildRoles)) guildRoles.forEach(r => { roleIdToName[r.id] = r.name; });
+
+    const result = members
+      .filter(m => !m.user?.bot)
+      .map(m => {
+        const roleNames = (m.roles ?? []).map(id => roleIdToName[id] ?? '').filter(Boolean);
+        const detectedLevel = detectLevelFromRoleNames(roleNames);
+        const existing = db.prepare('SELECT permission_level, permissions FROM user_permissions WHERE user_id=?').get(m.user.id);
+        let overrides = {};
+        if (existing) {
+          try { overrides = JSON.parse(existing.permissions); } catch {}
+        }
+        const level = existing?.permission_level ?? detectedLevel;
+        const defaults = DEFAULT_PERMISSIONS[level] ?? DEFAULT_PERMISSIONS.VISITEUR;
+        return {
+          user_id: m.user.id,
+          username: m.user.username,
+          display_name: m.nick || m.user.global_name || m.user.username,
+          avatar: m.user.avatar
+            ? `https://cdn.discordapp.com/avatars/${m.user.id}/${m.user.avatar}.png`
+            : `https://cdn.discordapp.com/embed/avatars/0.png`,
+          roles: roleNames,
+          detected_level: detectedLevel,
+          permission_level: level,
+          overrides,
+          effective: { ...defaults, ...overrides },
+          in_db: !!existing,
+        };
+      });
+    res.json(result);
+  } catch (e) { console.error('[/api/members]', e); res.status(500).json({ error: e.message }); }
+});
+
+// Noms de rôles Discord correspondant à chaque niveau RP (insensible à la casse)
+const LEVEL_ROLE_NAMES = {
+  JARL:     ['jarl'],
+  NOBLE:    ['noble'],
+  ECUYER:   ['écuyer', 'ecuyer', 'écuyère', 'ecuyere'],
+  PAYSAN:   ['paysan', 'paysanne'],
+  VISITEUR: ['visiteur', 'visiteuse'],
+};
+
+async function syncDiscordRole(userId, newLevel) {
+  try {
+    const guildRoles = await discordBot('GET', `/guilds/${GUILD_ID}/roles`);
+    if (!Array.isArray(guildRoles)) return { warned: 'Impossible de récupérer les rôles Discord.' };
+
+    // Trouve tous les rôles RP (tous niveaux) et le rôle cible
+    const allLevelKeywords = Object.values(LEVEL_ROLE_NAMES).flat();
+    const rpRoles = guildRoles.filter(r => {
+      const name = r.name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+      return allLevelKeywords.some(kw => {
+        const kwNorm = kw.normalize('NFD').replace(/[̀-ͯ]/g, '');
+        return name === kwNorm || name.startsWith(kwNorm + ' ') || name.endsWith(' ' + kwNorm);
+      });
+    });
+
+    const targetKeywords = LEVEL_ROLE_NAMES[newLevel] ?? [];
+    const targetRole = rpRoles.find(r => {
+      const name = r.name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+      return targetKeywords.some(kw => {
+        const kwNorm = kw.normalize('NFD').replace(/[̀-ͯ]/g, '');
+        return name === kwNorm || name.startsWith(kwNorm + ' ') || name.endsWith(' ' + kwNorm);
+      });
+    });
+
+    // Récupère les rôles actuels du membre
+    const member = await discordBot('GET', `/guilds/${GUILD_ID}/members/${userId}`);
+    if (!member?.roles) return { warned: 'Membre introuvable sur le serveur Discord.' };
+
+    const currentRoles = new Set(member.roles);
+
+    // Retire tous les autres rôles RP
+    for (const rpRole of rpRoles) {
+      if (targetRole && rpRole.id === targetRole.id) continue;
+      if (currentRoles.has(rpRole.id)) {
+        await discordBot('DELETE', `/guilds/${GUILD_ID}/members/${userId}/roles/${rpRole.id}`);
+      }
+    }
+
+    // Ajoute le rôle cible s'il existe
+    if (targetRole) {
+      if (!currentRoles.has(targetRole.id)) {
+        await discordBot('PUT', `/guilds/${GUILD_ID}/members/${userId}/roles/${targetRole.id}`, {});
+      }
+      return { roleAssigned: targetRole.name };
+    }
+
+    return { warned: `Rôle Discord pour le niveau "${newLevel}" introuvable sur le serveur. Créez un rôle nommé "${newLevel}" (ou "${LEVEL_ROLE_NAMES[newLevel]?.[0]}").` };
+  } catch (e) {
+    console.error('[syncDiscordRole]', e);
+    return { warned: `Erreur Discord : ${e.message}` };
+  }
+}
+
+app.put('/api/permissions/:userId', requireAdmin, async (req, res) => {
+  const { userId } = req.params;
+  const { permission_level, overrides } = req.body;
+  if (!LEVELS.includes(permission_level)) return res.status(400).json({ error: 'Niveau invalide' });
+
+  const existing = db.prepare('SELECT * FROM user_permissions WHERE user_id=?').get(userId);
+  if (!existing) return res.status(404).json({ error: 'Utilisateur non trouvé. Il doit se connecter d\'abord.' });
+
+  db.prepare(`
+    UPDATE user_permissions SET permission_level=?, permissions=?, updated_at=datetime('now'), updated_by=?
+    WHERE user_id=?
+  `).run(permission_level, JSON.stringify(overrides ?? {}), req.session.user?.nick ?? '', userId);
+
+  logActivity('perm_maj', `${existing.display_name} → ${permission_level}`, req.session.user?.nick);
+
+  // Sync Discord role only when level actually changed
+  let discordResult = {};
+  if (overrides === undefined || existing.permission_level !== permission_level) {
+    discordResult = await syncDiscordRole(userId, permission_level);
+  }
+
+  res.json({ ok: true, ...discordResult });
+});
+
+app.post('/api/permissions/sync/:userId', requireAdmin, async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const member = await discordBot('GET', `/guilds/${GUILD_ID}/members/${userId}`);
+    if (!member?.user) return res.status(404).json({ error: 'Membre non trouvé' });
+    const guildRoles = await discordBot('GET', `/guilds/${GUILD_ID}/roles`);
+    const roleIdToName = {};
+    if (Array.isArray(guildRoles)) guildRoles.forEach(r => { roleIdToName[r.id] = r.name; });
+    const roleNames = (member.roles ?? []).map(id => roleIdToName[id] ?? '').filter(Boolean);
+    const detectedLevel = detectLevelFromRoleNames(roleNames);
+    const displayName = member.nick || member.user.global_name || member.user.username;
+    upsertUser(userId, member.user.username, displayName, detectedLevel);
+    res.json({ ok: true, level: detectedLevel });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Config publique (GUILD_ID pour liens Discord) ─────────────────────────────
 app.get('/api/config', requireAuth, (_req, res) => res.json({ GUILD_ID }));
+
+// ── IA Chat (webapp) ──────────────────────────────────────────────────────────
+app.post('/api/ia/chat', requireAuth, async (req, res) => {
+  const { message } = req.body;
+  if (!message?.trim()) return res.status(400).json({ error: 'Message vide' });
+  const userId   = req.session.user.id;
+  const username = req.session.user.username;
+  const history  = getHistory(userId);
+  const nomRP    = req.session.user.nick ?? username;
+  const perms    = getEffectivePermissions(userId);
+  const levelLabel = LEVEL_LABELS[perms.level] ?? 'Membre';
+  const contexte = `[CONTEXTE DU JOUEUR]\nNom RP : ${nomRP}\nPseudo Discord : ${username}\nGrade RP : ${levelLabel}\n[FIN DU CONTEXTE]\n\n`;
+
+  addToHistory(userId, 'user', contexte + message);
+  try {
+    const systemPrompt = buildSystemPrompt(userId);
+    const reponse = await askNvidia(contexte + message, systemPrompt, history);
+    addToHistory(userId, 'assistant', reponse);
+    updatePlayerProfile(userId, nomRP, message);
+    res.json({ reponse });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/ia/history', requireAuth, (req, res) => {
+  try { stmts.convDelete.run(req.session.user.id); } catch {}
+  res.json({ ok: true });
+});
+
+// ── IA Analyser (webapp) ──────────────────────────────────────────────────────
+app.post('/api/ia/analyser', requireAuth, async (req, res) => {
+  const { imageBase64, contentType, question } = req.body;
+  if (!imageBase64 || !contentType) return res.status(400).json({ error: 'Image manquante' });
+
+  const NVIDIA_API_KEY = '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';
+  const VISION_MODEL   = 'meta/llama-3.2-90b-vision-instruct';
+
+  const stockLines = db.prepare(
+    'SELECT ressource, categorie, quantite, unite, prix_bronze FROM stock WHERE en_vente=1 ORDER BY categorie, ressource'
+  ).all().map(r => `${r.ressource} (${r.categorie}) : ${r.prix_bronze}🟤/${r.unite} · ${r.quantite > 0 ? r.quantite + ' ' + r.unite : 'épuisé'}`).join('\n') || 'Stock vide.';
+
+  const systemPrompt = `Tu es l'Analyste Visuel de La Compagnie du Fjord (Minecraft RP Vyldra). Tu analyses les images en français avec le ton d'un marchand viking. Identifie les ressources visibles et compare avec notre stock.\n\n=== STOCK ACTUEL ===\n${stockLines}\n=== FIN ===`;
+
+  try {
+    const r = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${NVIDIA_API_KEY}` },
+      body: JSON.stringify({
+        model: VISION_MODEL,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: [
+            { type: 'text', text: question || 'Décris et analyse cette image dans le contexte de Fjordheim.' },
+            { type: 'image_url', image_url: { url: `data:${contentType};base64,${imageBase64}` } },
+          ]},
+        ],
+        max_tokens: 1024, temperature: 0.5,
+      }),
+    });
+    if (!r.ok) throw new Error(`NVIDIA ${r.status}`);
+    const data = await r.json();
+    res.json({ reponse: data.choices[0]?.message?.content?.trim() ?? '*(Pas de réponse)*' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Négociation IA (webapp) ───────────────────────────────────────────────────
+app.post('/api/ia/negocier', requireAuth, async (req, res) => {
+  const { ressource, quantite, prix, type, contexte: ctx } = req.body;
+  if (!ressource || !quantite || !prix || !type) return res.status(400).json({ error: 'Paramètres manquants' });
+
+  const stockRow   = db.prepare('SELECT quantite, unite, prix_bronze, en_vente FROM stock WHERE LOWER(ressource)=?').get(ressource.toLowerCase());
+  const prixRegion = db.prepare('SELECT * FROM prix_regions WHERE LOWER(produit)=?').get(ressource.toLowerCase());
+  const tresor     = parseInt(db.prepare("SELECT value FROM config WHERE key='TRESOR_BRONZE'").get()?.value ?? '0');
+  const txHistory  = db.prepare("SELECT type, quantite, prix_bronze FROM transactions WHERE LOWER(ressource)=? ORDER BY date DESC LIMIT 5").all(ressource.toLowerCase());
+
+  const prixUnitaire = (prix / quantite).toFixed(2);
+  const stockInfo  = stockRow ? `Stock : ${stockRow.quantite} ${stockRow.unite} · Prix catalogue : ${stockRow.prix_bronze}🟤` : 'Absent du stock.';
+  const regionInfo = prixRegion ? `PDM:${prixRegion.prix_pdm??'?'} Rhême:${prixRegion.prix_rheme??'?'} Skanor:${prixRegion.prix_skanor??'?'} Byb:${prixRegion.prix_byb??'?'} Yuhang:${prixRegion.prix_yuhang??'?'}` : 'Pas de données régionales.';
+  const txInfo     = txHistory.map(t => `${t.type} ×${t.quantite} à ${t.prix_bronze}🟤/u`).join(' | ') || 'Aucun historique.';
+
+  const systemPrompt = `Tu es le Conseiller Commercial de La Compagnie du Fjord. Tu analyses des offres et donnes un verdict tranché : ACCEPTER, CONTRE-PROPOSER ou REFUSER. Trésorerie : ${tresor}🟤 · ${stockInfo} · Régions : ${regionInfo} · Historique : ${txInfo}`;
+  const userMsg = `Analyse cette ${type === 'achat' ? 'offre de vente (quelqu\'un nous vend)' : 'demande (on vend à quelqu\'un)'} :\nRessource : ${ressource} · Quantité : ${quantite} · Prix : ${prix}🟤 (${prixUnitaire}🟤/u)${ctx ? ' · Contexte : ' + ctx : ''}\nDonne : 1) évaluation du prix 2) verdict ACCEPTER/CONTRE-PROPOSER/REFUSER avec prix suggéré 3) justification 2-3 phrases 4) risques`;
+
+  try {
+    const reponse = await askNvidia(userMsg, systemPrompt);
+    res.json({ reponse, prixUnitaire, stockPrix: stockRow?.prix_bronze ?? null });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Contrats (webapp) ─────────────────────────────────────────────────────────
+app.get('/api/contrats', requireAuth, (req, res) => {
+  const { filtre = 'ouverts' } = req.query;
+  let rows;
+  if (filtre === 'miens') rows = stmts.contratByUser.all(req.session.user.id, req.session.user.id);
+  else rows = stmts.contratOuverts.all();
+  res.json(rows);
+});
+
+app.get('/api/contrats/all', requireAuth, (req, res) => {
+  const rows = db.prepare('SELECT * FROM contrats ORDER BY creee_le DESC LIMIT 50').all();
+  res.json(rows);
+});
+
+app.post('/api/contrats', requireAuth, (req, res) => {
+  const { ressource, quantite, unite = 'Unité', prix_total, penalite = 0, note = '', echeance_le } = req.body;
+  if (!ressource || !quantite || !prix_total || !echeance_le) return res.status(400).json({ error: 'Champs manquants' });
+  const u = req.session.user;
+  const r = stmts.contratInsert.run(u.id, u.nick ?? u.username, ressource, quantite, unite, prix_total, penalite, note, echeance_le);
+  res.json(stmts.contratById.get(r.lastInsertRowid));
+});
+
+app.put('/api/contrats/:id/accepter', requireAuth, (req, res) => {
+  const c = stmts.contratById.get(req.params.id);
+  if (!c) return res.status(404).json({ error: 'Contrat introuvable' });
+  if (c.statut !== 'ouvert') return res.status(400).json({ error: 'Contrat non ouvert' });
+  if (c.vendeur_id === req.session.user.id) return res.status(400).json({ error: 'Impossible d\'accepter son propre contrat' });
+  const u = req.session.user;
+  stmts.contratAccepter.run(u.id, u.nick ?? u.username, req.params.id);
+  res.json(stmts.contratById.get(req.params.id));
+});
+
+app.put('/api/contrats/:id/statut', requireAuth, (req, res) => {
+  const c = stmts.contratById.get(req.params.id);
+  if (!c) return res.status(404).json({ error: 'Contrat introuvable' });
+  if (c.vendeur_id !== req.session.user.id && c.acheteur_id !== req.session.user.id)
+    return res.status(403).json({ error: 'Non autorisé' });
+  const { statut } = req.body;
+  stmts.contratSetStatut.run(statut, req.params.id);
+  emit('contrats:update', {});
+  res.json(stmts.contratById.get(req.params.id));
+});
+
+// ── Bourse (webapp) ───────────────────────────────────────────────────────────
+app.get('/api/bourse/calculer', requireAuth, (req, res) => {
+  const { ressource, quantite } = req.query;
+  if (!ressource || !quantite) return res.status(400).json({ error: 'Paramètres manquants' });
+  const stock = db.prepare('SELECT prix_bronze, unite FROM stock WHERE LOWER(ressource)=?').get(ressource.toLowerCase());
+  if (!stock) return res.status(404).json({ error: 'Ressource introuvable' });
+  const total  = Math.round(stock.prix_bronze * parseFloat(quantite));
+  const or     = Math.floor(total / 100);
+  const argent = Math.floor((total % 100) / 10);
+  const bronze = total % 10;
+  res.json({ total, or, argent, bronze, prix_unitaire: stock.prix_bronze, unite: stock.unite });
+});
 
 // ── SPA ───────────────────────────────────────────────────────────────────────
 const serveIndex = (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html'));
 app.get('/', serveIndex);
 app.get('/{*splat}', serveIndex);
 
-app.listen(WEB_PORT, () => console.log(`⚓ Interface web → http://localhost:${WEB_PORT}`));
+httpServer.listen(WEB_PORT, () => console.log(`⚓ Interface web → http://localhost:${WEB_PORT}`));

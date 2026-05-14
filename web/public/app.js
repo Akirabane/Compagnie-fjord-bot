@@ -101,6 +101,20 @@ function confirmDlg(msg, onOk) {
   );
 }
 
+// ── Mobile table scroll wrap ──────────────────────────────────────────────────
+function wrapTables(root) {
+  const el = root || $('page-content');
+  if (!el) return;
+  el.querySelectorAll('table').forEach(t => {
+    if (t.parentElement?.classList.contains('tbl-scroll')) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'tbl-scroll';
+    wrap.style.cssText = 'overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:inherit';
+    t.parentNode.insertBefore(wrap, t);
+    wrap.appendChild(t);
+  });
+}
+
 // ── Sort system ───────────────────────────────────────────────────────────────
 const sortStates = {};
 
@@ -160,22 +174,81 @@ function chartColors(n) {
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
-function showLogin() { $('app').style.display = 'none'; $('login-screen').style.display = 'flex'; }
-function showApp()   { $('login-screen').style.display = 'none'; $('app').style.display = 'flex'; }
+function showLogin() { $('app').style.display = 'none'; $('login-screen').style.display = 'flex'; $('visiteur-blocked').style.display = 'none'; }
+function showApp()   { $('login-screen').style.display = 'none'; $('visiteur-blocked').style.display = 'none'; $('app').style.display = 'flex'; }
 async function logout() { await fetch('/auth/logout', { method: 'POST' }); showLogin(); }
+function showVisiteurBlocked() {
+  $('app').style.display = 'none';
+  $('login-screen').style.display = 'none';
+  $('visiteur-blocked').style.display = 'flex';
+}
+
+// ── Mobile sidebar ────────────────────────────────────────────────────────────
+function toggleSidebar() {
+  const sb = $('sidebar'), ov = $('sidebar-overlay');
+  const open = sb.classList.toggle('open');
+  ov.classList.toggle('visible', open);
+  document.body.style.overflow = open ? 'hidden' : '';
+}
+function closeSidebar() {
+  $('sidebar')?.classList.remove('open');
+  $('sidebar-overlay')?.classList.remove('visible');
+  document.body.style.overflow = '';
+}
+// Close sidebar on Escape key
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSidebar(); });
+
+// ── WebSocket temps réel ──────────────────────────────────────────────────────
+let _socket = null;
+function initSocket() {
+  if (_socket) return;
+  _socket = io({ transports: ['websocket'] });
+
+  _socket.on('stock:update', () => {
+    if (currentPage === 'stock' || currentPage === 'dashboard') PAGES[currentPage]?.render();
+  });
+
+  _socket.on('commandes:update', ({ id, statut }) => {
+    if (currentPage === 'commandes' || currentPage === 'dashboard') PAGES[currentPage]?.render();
+    // Flash visuel sur la ligne si la page commandes est ouverte
+    const row = document.querySelector(`[data-cmd-id="${id}"]`);
+    if (row) { row.style.transition = 'background .4s'; row.style.background = 'rgba(201,168,76,.18)'; setTimeout(() => row.style.background = '', 1500); }
+  });
+
+  _socket.on('tresor:update', ({ bronze }) => {
+    if (currentPage === 'tresorerie' || currentPage === 'dashboard') PAGES[currentPage]?.render();
+    // Mini-update du header trésorerie si visible sans rerender
+    const el = $('tresor-display');
+    if (el) el.textContent = bronzeToDisplay(bronze);
+  });
+
+  _socket.on('offres:update', () => {
+    if (currentPage === 'offres') PAGES.offres?.render();
+  });
+
+  _socket.on('connect', () => console.log('[WS] connecté'));
+  _socket.on('disconnect', () => console.log('[WS] déconnecté'));
+}
 
 // ── Router ────────────────────────────────────────────────────────────────────
 const PAGES = {
-  dashboard:  { title: '📊 Tableau de bord',   render: renderDashboard },
-  tarifs:     { title: '⚖️ Tarifs officiels',     render: renderTarifs },
-  logs:       { title: '📜 Journaux d\'activité', render: renderLogs },
-  stock:      { title: '📦 Stock',             render: renderStock },
-  prix:       { title: '💰 Prix en temps réel', render: renderPrix },
-  commandes:  { title: '📋 Commandes',          render: renderCommandes },
-  offres:     { title: '🛒 Offres de vente',    render: renderOffres },
-  tresorerie: { title: '🏦 Trésorerie',         render: renderTresorerie },
-  recettes:   { title: '📖 Recettes',           render: renderRecettes },
-  ia:         { title: '🤖 Intendant IA',       render: renderIA },
+  dashboard:  { title: '📊 Tableau de bord',        render: renderDashboard },
+  tarifs:     { title: '⚖️ Tarifs officiels',         render: renderTarifs },
+  logs:       { title: '📋 Journaux d\'activité',    render: renderLogs },
+  stock:      { title: '📦 Stock',                   render: renderStock },
+  prix:       { title: '💰 Prix en temps réel',      render: renderPrix },
+  commandes:  { title: '🛒 Commandes',               render: renderCommandes },
+  offres:     { title: '🛍️ Offres de vente',         render: renderOffres },
+  tresorerie: { title: '🏦 Trésorerie',              render: renderTresorerie },
+  recettes:   { title: '📖 Recettes',                render: renderRecettes },
+  ia:         { title: '🤖 Config Intendant IA',     render: renderIA },
+  permissions:{ title: '🛡️ Gestion des Permissions', render: renderPermissions },
+  wiki:       { title: '📚 Wiki & Commandes',        render: renderWiki },
+  'ia-chat':  { title: '💬 Chat Intendant',          render: renderIAChat },
+  analyser:   { title: '🔍 Analyse d\'image IA',     render: renderAnalyser },
+  negocier:   { title: '🤝 Négociation commerciale', render: renderNegocier },
+  bourse:     { title: '💱 Bourse & Conversions',    render: renderBourse },
+  contrats:   { title: '📜 Contrats',                render: renderContrats },
 };
 
 let currentPage = 'dashboard';
@@ -189,10 +262,15 @@ function navigate(page) {
   $('page-content').innerHTML = '<div class="empty"><div class="spinner"></div></div>';
   Object.values(charts).forEach(c => c.destroy());
   for (const k of Object.keys(charts)) delete charts[k];
-  PAGES[page].render();
+  const p = Promise.resolve(PAGES[page].render());
+  p.then(() => {
+    const el = $('page-content');
+    if (el) { el.classList.remove('page-enter'); void el.offsetWidth; el.classList.add('page-enter'); }
+    wrapTables();
+  });
 }
 document.querySelectorAll('.nav-item').forEach(el =>
-  el.addEventListener('click', () => navigate(el.dataset.page)));
+  el.addEventListener('click', () => { navigate(el.dataset.page); closeSidebar(); }));
 
 // ── DASHBOARD ─────────────────────────────────────────────────────────────────
 async function renderDashboard() {
@@ -217,7 +295,7 @@ async function renderDashboard() {
       <span style="font-weight:700;color:var(--gold);font-size:15px">Trésor de la Compagnie</span>
       <span id="tresor-display" style="margin-left:8px;color:var(--text-dim);font-size:13px">${bronzeToDisplay(tresorBronze)}</span>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;max-width:520px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:12px;max-width:520px">
       <label style="display:flex;flex-direction:column;gap:6px">
         <span style="font-size:12px;color:var(--text-dim);font-weight:600;letter-spacing:.04em">OR</span>
         <div style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px">
@@ -249,7 +327,7 @@ async function renderDashboard() {
     <button class="btn btn-sm btn-primary" style="margin-top:14px" onclick="saveTresor()">💾 Sauvegarder & publier sur Discord</button>
   </div>
 
-  <div style="display:grid;grid-template-columns:2fr 1fr;gap:20px;margin-bottom:20px">
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-bottom:16px">
     <div class="chart-card">
       <div class="chart-header"><span>📈 Revenus des 30 derniers jours</span></div>
       <div class="chart-body"><canvas id="c-ventes"></canvas></div>
@@ -260,7 +338,7 @@ async function renderDashboard() {
     </div>
   </div>
 
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-bottom:16px">
     <div class="chart-card">
       <div class="chart-header"><span>🏆 Top produits (revenus)</span></div>
       <div class="chart-body"><canvas id="c-top"></canvas></div>
@@ -272,7 +350,7 @@ async function renderDashboard() {
   </div>
 
   ${ventesParVendeur.length ? `
-  <div style="display:grid;grid-template-columns:1fr 2fr;gap:20px;margin-bottom:20px">
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-bottom:16px">
     <div class="chart-card">
       <div class="chart-header"><span>⚓ Ventes par marchand</span></div>
       <div class="chart-body"><canvas id="c-vendeurs"></canvas></div>
@@ -537,12 +615,25 @@ async function saveSeuilAlerte(el) {
   catch (e) { toast(e.message, 'error'); }
 }
 async function toggleVente(id, newVal, btn) {
+  // Optimistic UI : on change immédiatement, on annule si erreur
+  const prevClass = btn.className;
+  const prevText  = btn.textContent;
+  btn.className   = `vente-pill ${newVal ? 'on' : 'off'}`;
+  btn.textContent = newVal ? '🟢 En vente' : '🔴 Masqué';
+  btn.disabled    = true;
+  // Met à jour l'onclick pour le prochain clic avec la valeur inversée
+  btn.setAttribute('onclick', `toggleVente(${id},${newVal?0:1},this)`);
   try {
     await put(`/api/stock/${id}`, { en_vente: newVal });
-    btn.className = `vente-pill ${newVal ? 'on' : 'off'}`;
-    btn.textContent = newVal ? '🟢 En vente' : '🔴 Masqué';
     toast('Mis à jour');
-  } catch(e) { toast(e.message, 'error'); }
+  } catch(e) {
+    btn.className = prevClass;
+    btn.textContent = prevText;
+    btn.setAttribute('onclick', `toggleVente(${id},${newVal},this)`);
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
 }
 async function deleteStock(id, nom) {
   confirmDlg(`Supprimer <strong>${nom}</strong> du stock ?`, async () => {
@@ -663,35 +754,48 @@ async function submitAddPrix(){
 }
 
 // ── COMMANDES ────────────────────────────────────────────────────────────────
-let cmdFiltre = 'actives', cmdSearch = '';
+let cmdFiltre = 'actives', cmdSearch = '', cmdPage = 1;
+const CMD_LIMIT = 50;
+
 async function renderCommandes(){
   $('topbar-actions').innerHTML = `
     <a class="btn btn-ghost btn-sm" href="/api/commandes/export.csv" download>⬇ Export CSV</a>
     <button class="btn btn-primary" onclick="openNewCommande()">+ Nouvelle commande</button>`;
+  cmdPage = 1;
   await loadCommandes();
 }
 
 async function loadCommandes(){
-  const params = new URLSearchParams({ statut:cmdFiltre });
+  const params = new URLSearchParams({ statut: cmdFiltre, page: cmdPage, limit: CMD_LIMIT });
   if (cmdSearch) params.set('q', cmdSearch);
-  const rows = await get(`/api/commandes?${params}`);
-  if (!rows) return;
+  const d = await get(`/api/commandes?${params}`);
+  if (!d) return;
+  const { rows, total, pages } = d;
 
   const STATUTS = [
     {value:'actives',label:'🔄 Actives'},{value:'all',label:'📜 Toutes'},
     {value:'en_attente',label:'⏳ En attente'},{value:'en_cours',label:'⚒️ En cours'},
     {value:'prete',label:'📦 Prêtes'},{value:'livree',label:'✅ Livrées'},{value:'annulee',label:'❌ Annulées'},
   ];
-  const tabs = STATUTS.map(s=>`<button class="btn btn-sm ${s.value===cmdFiltre?'btn-primary':'btn-ghost'}" onclick="cmdFiltre='${s.value}';loadCommandes()">${s.label}</button>`).join('');
+  const tabs = STATUTS.map(s=>`<button class="btn btn-sm ${s.value===cmdFiltre?'btn-primary':'btn-ghost'}" onclick="cmdFiltre='${s.value}';cmdPage=1;loadCommandes()">${s.label}</button>`).join('');
+
+  // Pagination controls
+  const pageInfo = pages > 1 ? `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-ghost btn-sm" onclick="cmdPage=${Math.max(1,cmdPage-1)};loadCommandes()" ${cmdPage<=1?'disabled':''}>← Préc.</button>
+      <span style="color:var(--text-dim);font-size:12px">Page ${cmdPage} / ${pages}</span>
+      <button class="btn btn-ghost btn-sm" onclick="cmdPage=${Math.min(pages,cmdPage+1)};loadCommandes()" ${cmdPage>=pages?'disabled':''}>Suiv. →</button>
+    </div>` : '';
 
   $('page-content').innerHTML = `
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${tabs}</div>
     <div class="filter-bar" style="margin-bottom:14px">
       <div class="search-box" style="flex:1;min-width:220px">
         <input placeholder="Rechercher client, ressource…" value="${cmdSearch}"
-          oninput="cmdSearch=this.value;clearTimeout(window._ct);window._ct=setTimeout(loadCommandes,280)">
+          oninput="cmdSearch=this.value;cmdPage=1;clearTimeout(window._ct);window._ct=setTimeout(loadCommandes,280)">
       </div>
-      <span style="color:var(--text-dim);font-size:12px;align-self:center">${rows.length} commande${rows.length>1?'s':''}</span>
+      <span style="color:var(--text-dim);font-size:12px;align-self:center">${total} commande${total>1?'s':''}</span>
+      ${pageInfo}
     </div>
     <div class="table-wrap">
       <table>
@@ -706,8 +810,8 @@ async function loadCommandes(){
           ${th('commandes','statut','Statut')}
           <th>Actions</th>
         </tr></thead>
-        <tbody>${applySort('commandes', rows).length ? applySort('commandes', rows).map(r=>`
-          <tr>
+        <tbody>${rows.length ? rows.map(r=>`
+          <tr data-cmd-id="${r.id}">
             <td><code>#${String(r.id).padStart(4,'0')}</code></td>
             <td>
               <strong>${r.client_pseudo}</strong>
@@ -731,7 +835,8 @@ async function loadCommandes(){
           </tr>`).join('') : '<tr><td colspan="9"><div class="empty"><div class="empty-icon">📭</div><div>Aucune commande</div></div></td></tr>'}
         </tbody>
       </table>
-    </div>`;
+    </div>
+    ${pages > 1 ? `<div style="display:flex;justify-content:center;padding:16px">${pageInfo}</div>` : ''}`;
 }
 
 async function setCmd(id, statut){
@@ -1409,7 +1514,17 @@ let GUILD_ID = '';
 (async () => {
   const params = new URLSearchParams(location.search);
   const err = params.get('error');
-  const me = await fetch('/api/me').then(r => r.ok ? r.json() : null);
+  const meRes = await fetch('/api/me');
+
+  if (meRes.status === 403) {
+    const data = await meRes.json().catch(() => ({}));
+    if (data.error === 'VISITEUR_BLOCKED') {
+      showVisiteurBlocked();
+      return;
+    }
+  }
+
+  const me = meRes.ok ? await meRes.json() : null;
 
   if (!me) {
     showLogin();
@@ -1426,9 +1541,26 @@ let GUILD_ID = '';
   fetch('/api/config').then(r=>r.ok?r.json():null).then(c=>{if(c?.GUILD_ID)GUILD_ID=c.GUILD_ID;}).catch(()=>{});
 
   window._canWrite = !!me.canWrite;
+  window._isAdmin  = !!me.isAdmin;
+  window._me = me;
+
+  // Masquer la section Administration si pas admin
+  if (!me.isAdmin) {
+    document.querySelectorAll('.nav-section, .nav-item').forEach(el => {
+      if (el.classList.contains('nav-section') && el.textContent.trim() === 'Administration') el.style.display = 'none';
+      if (el.dataset.page === 'permissions') el.style.display = 'none';
+    });
+  }
   $('user-avatar').src  = me.avatar;
   $('user-name').textContent = me.nick;
+  // Show permission level badge in sidebar
+  const roleEl = document.querySelector('.user-role');
+  if (roleEl && me.permLevel) {
+    const labels = { JARL:'👑 Jarl', NOBLE:'⚜️ Noble', ECUYER:'🛡️ Écuyer', PAYSAN:'🌾 Paysan', VISITEUR:'🚪 Visiteur' };
+    roleEl.textContent = labels[me.permLevel] ?? '⚓ Membre';
+  }
   showApp();
+  initSocket();
   navigate('dashboard');
 })();
 
@@ -1565,3 +1697,1187 @@ window.tarifsEditSave = async function(id) {
     toast('Tarif mis à jour');
   } catch (e) { toast(e.message, 'err'); }
 };
+
+// ── PERMISSIONS ───────────────────────────────────────────────────────────────
+let _permMeta = null;
+let _permMembers = [];
+let _permFilter = 'ALL';
+let _permSearch = '';
+
+const PERM_LABELS = {
+  can_manage_stock:       '📦 Stock',
+  can_manage_orders:      '📋 Commandes',
+  can_view_treasury:      '🏦 Voir tréso.',
+  can_manage_treasury:    '💰 Modifier tréso.',
+  can_manage_prices:      '💹 Prix',
+  can_manage_catalog:     '📖 Catalogue',
+  can_view_analytics:     '📊 Stats',
+  can_manage_market:      '📈 Marché',
+  can_make_announcements: '📢 Annonces',
+  can_manage_forum:       '🗂️ Forum',
+  can_assign_roles:       '🎭 Rôles',
+  can_configure_bot:      '⚙️ Config bot',
+};
+
+const LEVEL_ORDER = ['JARL','NOBLE','ECUYER','PAYSAN','VISITEUR'];
+const LEVEL_LABELS_FR = { JARL:'👑 Jarl', NOBLE:'⚜️ Noble', ECUYER:'🛡️ Écuyer', PAYSAN:'🌾 Paysan', VISITEUR:'🚪 Visiteur' };
+
+async function renderPermissions() {
+  $('topbar-actions').innerHTML = `
+    <button class="btn btn-ghost btn-sm" onclick="loadPermMembers()">🔄 Actualiser</button>`;
+
+  $('page-content').innerHTML = `
+    <div style="margin-bottom:20px">
+      <p style="color:var(--text-dim);font-size:13px;line-height:1.7">
+        Gérez les droits de chaque membre Discord. Le niveau de permission est détecté automatiquement depuis les rôles Discord,
+        et peut être personnalisé manuellement. Les modifications sont effectives immédiatement sur le bot Discord et la webapp.
+      </p>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:20px">
+      <div class="search-box" style="max-width:260px">
+        <input id="perm-search" placeholder="Rechercher un membre…" oninput="filterPermMembers()">
+      </div>
+      <select id="perm-filter" class="filter-select" onchange="filterPermMembers()">
+        <option value="ALL">Tous les grades</option>
+        ${LEVEL_ORDER.map(l => `<option value="${l}">${LEVEL_LABELS_FR[l]}</option>`).join('')}
+      </select>
+      <span id="perm-count" style="color:var(--text-dim);font-size:12px"></span>
+    </div>
+    <div id="perm-legend" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px">
+      ${LEVEL_ORDER.map(l => `
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim)">
+          <span class="perm-level-badge perm-${l}">${LEVEL_LABELS_FR[l]}</span>
+        </div>`).join('')}
+    </div>
+    <div id="perm-members-grid" class="members-grid">
+      <div class="empty"><div class="spinner"></div></div>
+    </div>`;
+
+  if (!_permMeta) _permMeta = await get('/api/permissions/meta');
+  await loadPermMembers();
+}
+
+async function loadPermMembers() {
+  const grid = $('perm-members-grid');
+  if (grid) grid.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
+  _permMembers = await get('/api/members') ?? [];
+  renderPermGrid();
+}
+
+function filterPermMembers() {
+  _permSearch = $('perm-search')?.value?.toLowerCase() ?? '';
+  _permFilter = $('perm-filter')?.value ?? 'ALL';
+  renderPermGrid();
+}
+
+function renderPermGrid() {
+  const grid = $('perm-members-grid');
+  if (!grid) return;
+
+  let members = _permMembers;
+  if (_permFilter !== 'ALL') members = members.filter(m => m.permission_level === _permFilter);
+  if (_permSearch) members = members.filter(m =>
+    m.display_name.toLowerCase().includes(_permSearch) ||
+    m.username.toLowerCase().includes(_permSearch));
+
+  // Sort by level hierarchy then name
+  members = [...members].sort((a, b) => {
+    const li = LEVEL_ORDER.indexOf(a.permission_level);
+    const lj = LEVEL_ORDER.indexOf(b.permission_level);
+    if (li !== lj) return li - lj;
+    return a.display_name.localeCompare(b.display_name, 'fr');
+  });
+
+  const countEl = $('perm-count');
+  if (countEl) countEl.textContent = `${members.length} membre${members.length > 1 ? 's' : ''}`;
+
+  if (members.length === 0) {
+    grid.innerHTML = '<div class="empty"><div class="empty-icon">👥</div><p>Aucun membre trouvé.</p></div>';
+    return;
+  }
+
+  grid.innerHTML = members.map(m => renderMemberCard(m)).join('');
+}
+
+function renderMemberCard(m) {
+  const level = m.permission_level;
+  const levelLabel = LEVEL_LABELS_FR[level] ?? level;
+  const canEdit = window._canWrite;
+
+  const permKeys = Object.keys(PERM_LABELS);
+  const permFlags = permKeys.map(k => {
+    const active = m.effective[k];
+    const isOverride = m.overrides && k in m.overrides;
+    return `
+      <label class="perm-flag ${active ? 'active' : 'inactive'}" title="${PERM_LABELS[k]}${isOverride ? ' (personnalisé)' : ''}">
+        <input type="checkbox" ${active ? 'checked' : ''} ${canEdit ? '' : 'disabled'}
+          onchange="permToggleFlag('${m.user_id}','${k}',this.checked)"
+          ${isOverride ? 'style="outline:2px solid var(--gold)"' : ''}>
+        <span style="font-size:11px">${PERM_LABELS[k]}</span>
+        ${isOverride ? '<span style="color:var(--gold);font-size:9px">✦</span>' : ''}
+      </label>`;
+  }).join('');
+
+  const levelOptions = LEVEL_ORDER.map(l =>
+    `<option value="${l}" ${l === level ? 'selected' : ''}>${LEVEL_LABELS_FR[l]}</option>`
+  ).join('');
+
+  return `
+    <div class="member-card" id="mc-${m.user_id}">
+      <div class="member-header">
+        <img class="member-avatar" src="${m.avatar}" onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'">
+        <div class="member-info">
+          <div class="member-name">${escHtml(m.display_name)}</div>
+          <div class="member-username">@${escHtml(m.username)}</div>
+        </div>
+        <span class="perm-level-badge perm-${level}">${levelLabel}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <label style="font-size:12px;color:var(--text-dim);flex-shrink:0">Grade :</label>
+        <select class="level-select" ${canEdit ? '' : 'disabled'}
+          onchange="permChangeLevel('${m.user_id}',this.value)">
+          ${levelOptions}
+        </select>
+        ${!m.in_db ? `<span style="font-size:11px;color:var(--orange)" title="Pas encore connecté à la webapp">⚠️ jamais connecté</span>` : ''}
+      </div>
+      <div class="perm-grid">${permFlags}</div>
+      ${Object.keys(m.overrides ?? {}).length > 0 ? `
+        <div style="display:flex;justify-content:flex-end;margin-top:2px">
+          <button class="btn btn-ghost btn-sm" onclick="permResetOverrides('${m.user_id}')" title="Réinitialiser aux permissions par défaut du grade">↺ Réinitialiser</button>
+        </div>` : ''}
+    </div>`;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+window.filterPermMembers = filterPermMembers;
+window.loadPermMembers = loadPermMembers;
+
+window.permChangeLevel = async function(userId, newLevel) {
+  const member = _permMembers.find(m => m.user_id === userId);
+  if (!member) return;
+  const oldLevel = member.permission_level;
+  member.permission_level = newLevel;
+  // Reset overrides when changing level
+  member.overrides = {};
+  const defaults = _permMeta?.DEFAULT_PERMISSIONS?.[newLevel] ?? {};
+  member.effective = { ...defaults };
+  // Re-render card
+  const card = $(`mc-${userId}`);
+  if (card) card.outerHTML = renderMemberCard(member);
+
+  if (!member.in_db) {
+    toast('Ce membre n\'a jamais visité la webapp — impossible de sauvegarder.', 'error');
+    member.permission_level = oldLevel;
+    renderPermGrid();
+    return;
+  }
+  try {
+    const result = await put(`/api/permissions/${userId}`, { permission_level: newLevel, overrides: {} });
+    if (result?.warned) toast(`⚠️ ${result.warned}`, 'error');
+    else if (result?.roleAssigned) toast(`${member.display_name} → ${LEVEL_LABELS_FR[newLevel]} · Rôle Discord "${result.roleAssigned}" assigné`);
+    else toast(`Grade de ${member.display_name} → ${LEVEL_LABELS_FR[newLevel]}`);
+  } catch (e) { toast(e.message, 'error'); member.permission_level = oldLevel; renderPermGrid(); }
+};
+
+window.permToggleFlag = async function(userId, permKey, checked) {
+  const member = _permMembers.find(m => m.user_id === userId);
+  if (!member) return;
+  if (!member.in_db) {
+    toast('Ce membre n\'a jamais visité la webapp — impossible de sauvegarder.', 'error');
+    renderPermGrid(); return;
+  }
+  const defaults = _permMeta?.DEFAULT_PERMISSIONS?.[member.permission_level] ?? {};
+  // Only store as override if different from default
+  if (!member.overrides) member.overrides = {};
+  if (defaults[permKey] === checked) {
+    delete member.overrides[permKey];
+  } else {
+    member.overrides[permKey] = checked;
+  }
+  member.effective[permKey] = checked;
+
+  try {
+    await put(`/api/permissions/${userId}`, { permission_level: member.permission_level, overrides: member.overrides });
+    // Re-render card to update override indicators
+    const card = $(`mc-${userId}`);
+    if (card) card.outerHTML = renderMemberCard(member);
+    toast('Permission mise à jour');
+  } catch (e) { toast(e.message, 'error'); await loadPermMembers(); }
+};
+
+window.permResetOverrides = async function(userId) {
+  const member = _permMembers.find(m => m.user_id === userId);
+  if (!member) return;
+  member.overrides = {};
+  const defaults = _permMeta?.DEFAULT_PERMISSIONS?.[member.permission_level] ?? {};
+  member.effective = { ...defaults };
+  try {
+    await put(`/api/permissions/${userId}`, { permission_level: member.permission_level, overrides: {} });
+    const card = $(`mc-${userId}`);
+    if (card) card.outerHTML = renderMemberCard(member);
+    toast('Permissions réinitialisées aux valeurs par défaut du grade');
+  } catch (e) { toast(e.message, 'error'); }
+};
+
+// ── Wiki ──────────────────────────────────────────────────────────────────────
+const WIKI_ENTRIES = [
+  // ── IA Village ──
+  {
+    cat: 'ia', tags: ['ia','bot','village'],
+    icon: '🏰', title: 'Intendant IA — Salon Village',
+    tag: 'IA', tagClass: 'ia',
+    desc: 'L\'IA principale de la Compagnie. Répond à tous les membres (Paysan et +) dans le salon #intendant-village. Connaît en temps réel le stock, les commandes actives, les offres de vente, la trésorerie, les recettes et les tarifs officiels.',
+    usage: '#intendant-village → écrire un message',
+    options: [
+      ['Accès','Membres Discord avec grade Paysan ou supérieur'],
+      ['Contexte injecté','Stock complet · Commandes actives · Offres · Trésorerie · Tarifs officiels · Coûts de craft'],
+      ['Mémoire','25 messages par personne · persistante en base · TTL 30 min d\'inactivité'],
+      ['Langues','Détecte la langue et répond dans la même (FR par défaut)'],
+      ['Ton','Adapté au grade RP : Jarl (institutionnel) · Noble (pro) · Écuyer (collègue) · Paysan (pédagogique)'],
+    ],
+    note: 'Chaque message est supprimé après envoi pour garder le salon propre. La réponse s\'auto-supprime après 60s.'
+  },
+  {
+    cat: 'ia', tags: ['ia','bot','visiteurs'],
+    icon: '🚪', title: 'Commis IA — Salon Visiteurs',
+    tag: 'IA', tagClass: 'ia',
+    desc: 'Version publique de l\'IA pour les visiteurs et marchands de passage. Répond dans #intendant-visiteurs. Montre uniquement le stock en vente, aide à commander ou vendre, présente Fjordheim.',
+    usage: '#intendant-visiteurs → écrire un message',
+    options: [
+      ['Accès','Tous les membres du serveur Discord'],
+      ['Stock visible','Uniquement les ressources en vente (pas l\'inventaire interne complet)'],
+      ['Trésorerie','Non divulguée ("la Compagnie est prospère" sans chiffres)'],
+      ['Besoins','Indique proactivement les ressources épuisées ou en stock bas qu\'on cherche à acheter'],
+    ],
+    note: 'Si quelqu\'un mentionne "j\'ai du bois" ou "je cherche des potions", l\'IA répond proactivement avec prix et dispo.'
+  },
+  {
+    cat: 'ia', tags: ['ia','bot','analyser','image','vision'],
+    icon: '🔍', title: '/analyser — Analyse d\'image IA',
+    tag: 'IA', tagClass: 'ia',
+    desc: 'Commande slash utilisant un modèle IA vision (LLaMA 3.2 90B). Analyse des screenshots Minecraft : inventaires, coffres, cartes, interfaces de craft. Compare automatiquement avec le stock de la Compagnie et suggère des échanges.',
+    usage: '/analyser image:[fichier] question:[texte optionnel]',
+    options: [
+      ['image','Fichier image obligatoire (PNG, JPG, WEBP, GIF)'],
+      ['question','Question ou contexte précis sur l\'image (optionnel)'],
+      ['Modèle','meta/llama-3.2-90b-vision-instruct'],
+      ['Stock injecté','Compare ce qu\'il voit avec notre stock en temps réel'],
+    ],
+    note: 'L\'image est téléchargée depuis Discord et envoyée en base64 à l\'API NVIDIA pour éviter les problèmes d\'accès CDN.'
+  },
+  {
+    cat: 'ia', tags: ['ia','bot','negocier','commercial'],
+    icon: '🤝', title: '/negocier — Conseiller commercial IA',
+    tag: 'IA', tagClass: 'ia',
+    desc: 'L\'IA analyse une offre d\'achat ou de vente et donne un verdict tranché : ACCEPTER, CONTRE-PROPOSER (avec prix suggéré), ou REFUSER. Compare prix catalogue, prix régionaux et historique des transactions.',
+    usage: '/negocier ressource:[nom] quantite:[n] prix:[bronze] type:[achat|vente]',
+    options: [
+      ['ressource','Nom de la ressource concernée'],
+      ['quantite','Quantité en jeu'],
+      ['prix','Prix total proposé en bronze'],
+      ['type','achat (quelqu\'un nous vend) ou vente (on vend à quelqu\'un)'],
+      ['contexte','Contexte supplémentaire optionnel (urgent, relation RP, région…)'],
+    ],
+    note: 'L\'embed est coloré : vert (ACCEPTER), orange (CONTRE-PROPOSER), rouge (REFUSER).'
+  },
+  {
+    cat: 'ia', tags: ['ia','bot','recap','historique','memoire'],
+    icon: '📜', title: '/recap — Historique de conversation',
+    tag: 'IA', tagClass: 'ia',
+    desc: 'Affiche ou efface ton historique de conversation avec l\'Intendant IA. La mémoire est personnelle, persistante en base de données.',
+    usage: '/recap voir  |  /recap effacer',
+    options: [
+      ['voir','Affiche tes 25 derniers messages échangés avec l\'IA'],
+      ['effacer','Remet à zéro ta mémoire — l\'IA repart de zéro à la prochaine conversation'],
+    ],
+    note: 'La réponse est visible uniquement par toi (éphémère). La mémoire s\'efface automatiquement après 30 min d\'inactivité.'
+  },
+  // ── Commandes publiques ──
+  {
+    cat: 'commandes', tags: ['bot','commandes','catalogue','public'],
+    icon: '🗂️', title: '/catalogue — Parcourir le stock',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Affiche les ressources disponibles à l\'achat, classées par catégorie. Boutons de navigation pour parcourir les pages.',
+    usage: '/catalogue',
+    options: [
+      ['Accès','Tous'],
+      ['Contenu','Ressources en vente avec quantité, prix, unité'],
+    ],
+  },
+  {
+    cat: 'commandes', tags: ['bot','commandes','commander','public'],
+    icon: '🛒', title: '/commander — Passer une commande',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Passe une commande auprès de la Compagnie. Génère un post de forum Discord avec thread de suivi. Notifications automatiques à chaque changement de statut.',
+    usage: '/commander ressource:[nom] quantite:[n] note:[texte optionnel]',
+    options: [
+      ['ressource','Nom de la ressource (doit exister dans le stock)'],
+      ['quantite','Quantité souhaitée'],
+      ['note','Note ou instructions particulières (optionnel)'],
+    ],
+    note: 'Statuts : En attente → En cours → Prête → Livrée. DM automatique à chaque étape.'
+  },
+  {
+    cat: 'commandes', tags: ['bot','commandes','macommande','public'],
+    icon: '📋', title: '/macommande — Voir mes commandes',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Affiche toutes tes commandes en cours avec leur statut actuel.',
+    usage: '/macommande',
+    options: [['Accès','Tous · Visible uniquement par toi (éphémère)']],
+  },
+  {
+    cat: 'commandes', tags: ['bot','commandes','marchands','gestion'],
+    icon: '⚙️', title: '/commandes — Gérer les commandes (marchands)',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Gestion complète des commandes pour les marchands. Liste, détail, changement de statut, filtres. Système de réputation client intégré.',
+    usage: '/commandes liste  |  /commandes detail id:[n]  |  /commandes statut id:[n] statut:[statut]',
+    options: [
+      ['liste','Liste paginée avec filtres par statut'],
+      ['detail','Détail complet d\'une commande'],
+      ['statut','Changer le statut : en_cours · prete · livree · annulee'],
+    ],
+  },
+  // ── Contrats ──
+  {
+    cat: 'contrats', tags: ['bot','contrats'],
+    icon: '📜', title: '/contrat creer — Nouveau contrat',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Crée un contrat de livraison public. Tout membre peut l\'accepter. Définit ressource, quantité, prix, délai et pénalité de retard optionnelle.',
+    usage: '/contrat creer ressource:[nom] quantite:[n] prix:[bronze] delai:[3j|48h|1semaine]',
+    options: [
+      ['ressource','Ressource à livrer'],
+      ['quantite','Quantité'],
+      ['prix','Prix total en bronze'],
+      ['delai','Délai : formats acceptés : 3j, 48h, 2d, 1semaine'],
+      ['unite','Unité (défaut : Unité)'],
+      ['penalite','Pénalité de retard en bronze (optionnel)'],
+      ['note','Conditions particulières (optionnel)'],
+    ],
+  },
+  {
+    cat: 'contrats', tags: ['bot','contrats'],
+    icon: '🤝', title: '/contrat accepter — Accepter un contrat',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Accepte un contrat ouvert. Le vendeur reçoit un DM automatique. Impossible d\'accepter son propre contrat.',
+    usage: '/contrat accepter id:[n]',
+    options: [['id','ID du contrat à accepter']],
+    note: 'DM automatique au vendeur avec rappel de l\'échéance et de la pénalité.'
+  },
+  {
+    cat: 'contrats', tags: ['bot','contrats'],
+    icon: '📢', title: '/contrat lister — Voir les contrats',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Liste les contrats ouverts disponibles, ou tes propres contrats.',
+    usage: '/contrat lister filtre:[ouverts|miens]',
+    options: [
+      ['ouverts','Tous les contrats disponibles à accepter'],
+      ['miens','Tes contrats (vendeur ou acheteur)'],
+    ],
+  },
+  {
+    cat: 'contrats', tags: ['bot','contrats'],
+    icon: '🔄', title: '/contrat statut — Changer le statut',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Met à jour le statut d\'un contrat dont tu es partie prenante. L\'autre partie reçoit un DM automatique.',
+    usage: '/contrat statut id:[n] statut:[en_cours|livre|annule|litige]',
+    options: [
+      ['en_cours','Livraison en cours de préparation'],
+      ['livre','Contrat honoré et livré'],
+      ['annule','Annulation du contrat'],
+      ['litige','Signaler un désaccord'],
+    ],
+  },
+  // ── Stock & Prix ──
+  {
+    cat: 'stock', tags: ['bot','stock','marchands'],
+    icon: '📦', title: '/stock — Gérer le stock',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Gestion complète du stock interne. Voir, mettre à jour, modifier les prix, activer/désactiver la vente, supprimer.',
+    usage: '/stock voir  |  /stock maj ressource:[nom] quantite:[n]  |  /stock prix ressource:[nom] prix:[n]',
+    options: [
+      ['voir','Parcourir l\'inventaire complet par catégorie'],
+      ['maj','Mettre à jour la quantité d\'une ressource'],
+      ['prix','Modifier le prix d\'une ressource'],
+      ['toggle','Activer ou désactiver la mise en vente'],
+      ['vendre','Enregistrer une vente (diminue le stock et crédite la trésorerie)'],
+      ['supprimer','Supprimer une ressource du catalogue'],
+    ],
+  },
+  {
+    cat: 'stock', tags: ['bot','prix','regions','marche'],
+    icon: '💰', title: '/prix — Prix régionaux',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Tableau comparatif des prix dans les 5 régions commerciales : PDM, Rhême, Skanor, Byb-Razab, Yuhang.',
+    usage: '/prix voir  |  /prix modifier  |  /prix ajouter  |  /prix supprimer',
+    options: [
+      ['voir','Tableau comparatif paginé'],
+      ['modifier','Modifier un prix régional existant'],
+      ['ajouter','Ajouter un nouveau produit au tableau'],
+      ['supprimer','Supprimer un produit'],
+    ],
+  },
+  {
+    cat: 'stock', tags: ['bot','marche','fluctuation'],
+    icon: '📈', title: '/marche — Fluctuations de marché',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Simule des variations RP de prix (hausse ou baisse de marché). Les variations s\'appliquent en pourcentage sur les prix de base.',
+    usage: '/marche fluctuation ressource:[nom] variation:[%]  |  /marche reset  |  /marche voir',
+    options: [
+      ['fluctuation','Applique une variation en % (positif = hausse, négatif = baisse)'],
+      ['reset','Remet toutes les variations à 0'],
+      ['voir','Affiche les variations actives'],
+    ],
+  },
+  // ── Recettes ──
+  {
+    cat: 'recettes', tags: ['bot','recettes','craft'],
+    icon: '📖', title: '/recette — Recettes de craft',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Catalogue des recettes de craft par profession et niveau. Calcul automatique du coût théorique basé sur les prix du stock.',
+    usage: '/recette voir  |  /recette chercher nom:[texte]  |  /recette compagnie  |  /recette ajouter',
+    options: [
+      ['voir','Parcourir par profession et niveau avec filtres'],
+      ['chercher','Rechercher une recette par nom d\'objet'],
+      ['compagnie','Recettes des métiers pratiqués dans la Compagnie'],
+      ['ajouter','Ajouter une nouvelle recette (marchands)'],
+    ],
+  },
+  // ── Réputation & Inventaire ──
+  {
+    cat: 'membres', tags: ['bot','reputation','inventaire','client'],
+    icon: '⭐', title: '/inventaire — Fiche client',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Fiche complète d\'un membre : historique des commandes, réputation ★, segment client (VIP/Régulier/Risque/Nouveau), statistiques (total bronze dépensé, taux d\'annulation).',
+    usage: '/inventaire membre:[@membre]',
+    options: [
+      ['membre','Mention Discord du membre à consulter'],
+      ['Segment VIP','👑 +500🟤 dépensés ou +10 commandes livrées'],
+      ['Segment Régulier','🤝 3 à 9 commandes livrées'],
+      ['Segment Risque','⚠️ 3 annulations ou plus'],
+      ['Segment Nouveau','🆕 Moins de 3 commandes'],
+    ],
+    note: 'Visible uniquement par toi (éphémère). Le segment est aussi injecté dans le contexte de l\'Intendant IA.'
+  },
+  // ── Trésorerie ──
+  {
+    cat: 'tresorerie', tags: ['bot','tresorerie','bourse'],
+    icon: '🏦', title: '/bourse — Conversions monétaires',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Outils de calcul monétaire pour le système Bronze/Argent/Or du serveur Vyldra.',
+    usage: '/bourse convertir montant:[n]  |  /bourse calculer ressource:[nom] quantite:[n]',
+    options: [
+      ['convertir','Convertit un montant bronze en Or 🟡 / Argent ⚪ / Bronze 🟤'],
+      ['calculer','Calcule le prix total d\'un achat en quantité selon le prix catalogue'],
+    ],
+    note: '1 Or = 100 Bronze · 1 Argent = 10 Bronze · "écu" = bronze sur le serveur Vyldra.'
+  },
+  // ── Alertes ──
+  {
+    cat: 'alertes', tags: ['bot','alertes','monitoring','admin'],
+    icon: '🔔', title: 'Système d\'alertes automatiques',
+    tag: 'Admin', tagClass: 'admin',
+    desc: 'Monitoring toutes les 5 minutes. Envoie des alertes Discord dans un salon dédié. Anti-spam : cooldown 2h par alerte identique.',
+    usage: '/alertes salon #salon  |  /alertes tresor seuil:[bronze]  |  /alertes info',
+    options: [
+      ['Stock épuisé','⬛ Alerte quand une ressource tombe à 0'],
+      ['Stock bas','⚠️ Alerte quand une ressource passe sous son seuil d\'alerte'],
+      ['Commandes +2h','⏳ Alerte si des commandes restent en attente plus de 2h'],
+      ['Trésorerie','🏦 Alerte si le solde passe sous le seuil configuré (défaut 500🟤)'],
+      ['Contrats expirants','📜 Alerte 24h avant l\'échéance d\'un contrat'],
+      ['Commande VIP','👑 Alerte instantanée pour clients VIP ou commandes +200🟤'],
+    ],
+    note: 'Config avec /alertes salon pour définir le canal de réception. /alertes tresor pour le seuil.'
+  },
+  // ── Forum & Annonces ──
+  {
+    cat: 'forum', tags: ['bot','forum','annonce'],
+    icon: '📣', title: '/annonce — Publication RP',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Publie une annonce officielle de la Compagnie dans un salon Discord. Format embed avec titre, contenu et couleur personnalisables.',
+    usage: '/annonce titre:[texte] contenu:[texte] couleur:[hex optionnel]',
+    options: [
+      ['titre','Titre de l\'annonce'],
+      ['contenu','Corps du message (markdown supporté)'],
+      ['couleur','Couleur hex de l\'embed (optionnel, défaut : or)'],
+    ],
+    note: 'Accès réservé aux marchands avec permission can_make_announcements.'
+  },
+  {
+    cat: 'forum', tags: ['bot','forum','offres','vendeurs'],
+    icon: '🛍️', title: '/forum — Offres de vente publiques',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Système de forum pour les vendeurs extérieurs. Chaque vendeur a un post dédié mis à jour automatiquement. Les marchands peuvent accepter ou refuser via la webapp.',
+    usage: 'Bouton "Vendre à la Compagnie" dans les salons appropriés',
+    options: [
+      ['Vendeur','Propose ses ressources avec quantité, prix souhaité et note'],
+      ['Marchand','Accepte ou refuse depuis la page "Offres de vente" de la webapp'],
+      ['Post forum','1 post par vendeur, mis à jour automatiquement'],
+    ],
+  },
+  // ── Tarifs ──
+  {
+    cat: 'stock', tags: ['bot','tarifs'],
+    icon: '⚖️', title: '/tarifs — Tarifs officiels',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Affiche les grilles tarifaires officielles validées par le Grand Marchand de Skarn. Filtrables par métier.',
+    usage: '/tarifs  |  /tarifs metier:[nom]',
+    options: [
+      ['Sans argument','Tous les tarifs par métier'],
+      ['metier','Filtrer : Ouvrier · Forgeron · Agriculteur · Constructeur · Apothicaire'],
+    ],
+  },
+  // ── Métiers ──
+  {
+    cat: 'membres', tags: ['bot','metiers','roles'],
+    icon: '⚒️', title: '/metiers — Gestion des métiers',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Embed interactif pour choisir son métier de base et sa spécialisation. Attribue les rôles Discord correspondants automatiquement.',
+    usage: '/metiers  (ou via l\'embed dans le salon dédié)',
+    options: [
+      ['Métiers base','Fermier · Chasseur/Pêcheur · Bâtisseur · Cuisinier · Forgeron · Apothicaire · Ouvrier · Tanneur · Garde · Druide'],
+      ['Spécialisations','2 par métier, accessibles au rang 10. Exemples : Forgeron de Guerre, Architecte de Guerre, Völva…'],
+    ],
+  },
+  // ── Permissions ──
+  {
+    cat: 'permissions', tags: ['web','admin','permissions'],
+    icon: '🛡️', title: 'Gestion des permissions (webapp)',
+    tag: 'Web', tagClass: 'web',
+    desc: 'Interface admin pour gérer les niveaux d\'accès de chaque membre. Synchronise les rôles Discord en temps réel. Accessible uniquement aux admins.',
+    usage: 'Webapp → Administration → Permissions',
+    options: [
+      ['JARL 👑','Accès total : stock, commandes, trésorerie, prix, catalogue, marché, annonces, forum, rôles, config bot'],
+      ['NOBLE ⚜️','Stock, commandes, trésorerie R/W, prix, catalogue, stats, marché, annonces, forum'],
+      ['ÉCUYER 🛡️','Stock, commandes, trésorerie lecture, prix, catalogue, stats, marché, forum'],
+      ['PAYSAN 🌾','Lecture des statistiques uniquement'],
+      ['VISITEUR 🚪','Commandes publiques Discord uniquement — pas d\'accès webapp'],
+    ],
+    note: 'Les rôles Discord se mettent à jour automatiquement lors d\'un changement de niveau sur la webapp (pas besoin de se re-connecter).'
+  },
+  // ── Webapp ──
+  {
+    cat: 'webapp', tags: ['web'],
+    icon: '📊', title: 'Tableau de bord',
+    tag: 'Web', tagClass: 'web',
+    desc: 'KPIs en temps réel : stock total, commandes actives, ventes semaine/mois. Graphiques : ventes 30 jours, top produits, répartition stock par catégorie, commandes par statut, top vendeurs.',
+    usage: 'Webapp → Tableau de bord',
+    options: [
+      ['Temps réel','WebSocket — les KPIs se mettent à jour sans recharger la page'],
+      ['Graphiques','Chart.js : barres, camemberts, courbes'],
+    ],
+  },
+  {
+    cat: 'webapp', tags: ['web'],
+    icon: '📦', title: 'Gestion du stock (webapp)',
+    tag: 'Web', tagClass: 'web',
+    desc: 'Cartes visuelles par ressource avec barre de niveau, prix, toggle en vente, seuil d\'alerte configurable. Filtres par catégorie et recherche.',
+    usage: 'Webapp → Stock',
+    options: [
+      ['Toggle','Optimistic UI : le changement est instantané, rollback automatique en cas d\'erreur'],
+      ['Seuil alerte','Configurable par ressource — déclenche une alerte Discord automatique si atteint'],
+      ['Ajout/Modif/Suppression','Interface inline sans rechargement de page'],
+    ],
+  },
+  {
+    cat: 'webapp', tags: ['web'],
+    icon: '🏦', title: 'Trésorerie (webapp)',
+    tag: 'Web', tagClass: 'web',
+    desc: 'Solde actuel en Or/Argent/Bronze, graphique d\'évolution, historique complet des mouvements colorisé (entrées vertes, dépenses rouges), formulaire d\'ajout de mouvement avec motif.',
+    usage: 'Webapp → Trésorerie',
+    options: [
+      ['Temps réel','Mise à jour WebSocket à chaque transaction'],
+      ['Historique','Horodaté avec auteur et motif'],
+    ],
+  },
+  {
+    cat: 'webapp', tags: ['web'],
+    icon: '🤖', title: 'Intendant IA (webapp)',
+    tag: 'Web', tagClass: 'web',
+    desc: 'Édition du pré-prompt de l\'IA directement depuis la webapp. Aperçu en temps réel du prompt complet envoyé à l\'IA (avec données injectées). Deux prompts séparés : Village et Visiteurs.',
+    usage: 'Webapp → Intendant IA',
+    options: [
+      ['Prompt Village','Prompt de l\'Intendant principal (membres)'],
+      ['Prompt Visiteurs','Prompt du Commis aux Visiteurs'],
+      ['Aperçu temps réel','Voir exactement ce que l\'IA reçoit avec les données actuelles'],
+      ['Reset','Bouton pour revenir au prompt par défaut'],
+    ],
+  },
+  {
+    cat: 'webapp', tags: ['web','admin'],
+    icon: '📜', title: 'Journaux d\'activité',
+    tag: 'Web', tagClass: 'web',
+    desc: 'Historique de toutes les actions réalisées sur le bot et la webapp : commandes, modifications de stock, transactions, changements de statut. Horodaté avec auteur.',
+    usage: 'Webapp → Journaux',
+    options: [['Filtre','Par type d\'action, par auteur, par date']],
+  },
+  // ── Config ──
+  {
+    cat: 'config', tags: ['bot','admin','config'],
+    icon: '⚙️', title: '/ia — Configuration des salons IA',
+    tag: 'Admin', tagClass: 'admin',
+    desc: 'Configure les salons Discord des deux intendants IA. Poste les embeds d\'accueil automatiquement.',
+    usage: '/ia village salon:#salon  |  /ia visiteurs salon:#salon  |  /ia info',
+    options: [
+      ['village','Définit le salon #intendant-village'],
+      ['visiteurs','Définit le salon #intendant-visiteurs'],
+      ['info','Affiche la configuration actuelle'],
+    ],
+  },
+  {
+    cat: 'config', tags: ['bot','admin','roles'],
+    icon: '🎭', title: '/roles — Configuration des rôles',
+    tag: 'Admin', tagClass: 'admin',
+    desc: 'Configure les rôles Discord automatiques : Visiteur attribué aux nouveaux membres, rôles des grades RP pour la synchronisation des permissions.',
+    usage: '/roles visiteur role:[@role]  |  /roles info',
+    options: [
+      ['visiteur','Rôle attribué automatiquement aux nouveaux membres'],
+      ['info','Affiche la configuration actuelle'],
+    ],
+  },
+];
+
+const WIKI_CATEGORIES = [
+  { id: 'all',         label: '🌐 Tout voir' },
+  { id: 'ia',         label: '🤖 IA & Vision' },
+  { id: 'commandes',  label: '🛒 Commandes' },
+  { id: 'contrats',   label: '📜 Contrats' },
+  { id: 'stock',      label: '📦 Stock & Prix' },
+  { id: 'recettes',   label: '📖 Recettes' },
+  { id: 'tresorerie', label: '🏦 Trésorerie' },
+  { id: 'membres',    label: '👥 Membres & Réputation' },
+  { id: 'alertes',    label: '🔔 Alertes' },
+  { id: 'forum',      label: '📣 Forum & Annonces' },
+  { id: 'permissions',label: '🛡️ Permissions' },
+  { id: 'webapp',     label: '🖥️ Webapp' },
+  { id: 'config',     label: '⚙️ Configuration' },
+];
+
+let _wikiCat = 'all';
+let _wikiSearch = '';
+
+function renderWiki() {
+  const el = $('page-content');
+
+  const filtered = WIKI_ENTRIES.filter(e => {
+    const matchCat    = _wikiCat === 'all' || e.cat === _wikiCat;
+    const q           = _wikiSearch.toLowerCase();
+    const matchSearch = !q ||
+      e.title.toLowerCase().includes(q) ||
+      e.desc.toLowerCase().includes(q) ||
+      (e.usage || '').toLowerCase().includes(q) ||
+      e.tags.some(t => t.includes(q));
+    return matchCat && matchSearch;
+  });
+
+  const filtersHtml = WIKI_CATEGORIES.map(c =>
+    `<button class="wiki-filter${_wikiCat === c.id ? ' active' : ''}" onclick="wikiSetCat('${c.id}')">${c.label}</button>`
+  ).join('');
+
+  const cardsHtml = filtered.length === 0
+    ? `<div class="wiki-empty">Aucun résultat pour "<b>${_wikiSearch}</b>"</div>`
+    : filtered.map(e => {
+        const idx = WIKI_ENTRIES.indexOf(e);
+        const usageHtml = e.usage ? `<div class="wiki-card-usage">${e.usage.split('|')[0].trim()}</div>` : '';
+        return `
+          <div class="wiki-card" onclick="wikiModalOpen(${idx})" title="Cliquer pour les détails">
+            <div class="wiki-card-header">
+              <span class="wiki-card-icon">${e.icon}</span>
+              <span class="wiki-card-title">${e.title}</span>
+              <span class="wiki-card-tag ${e.tagClass}">${e.tag}</span>
+            </div>
+            <div class="wiki-card-desc">${e.desc}</div>
+            ${usageHtml}
+            <div style="font-size:11px;color:var(--text-muted);margin-top:8px;opacity:.6">👆 Cliquer pour les détails</div>
+          </div>`;
+      }).join('');
+
+  el.innerHTML = `
+    <div class="wiki-header">
+      <input class="wiki-search" id="wiki-search" placeholder="🔍 Rechercher une commande, une feature…" value="${_wikiSearch}" oninput="wikiSearch(this.value)">
+      <div class="wiki-filters">${filtersHtml}</div>
+    </div>
+    <div class="wiki-cards">${cardsHtml}</div>
+    <p style="color:var(--text-muted);font-size:12px;margin-top:24px;text-align:right">${filtered.length} entrée(s) affichée(s) sur ${WIKI_ENTRIES.length}</p>
+  `;
+}
+
+function wikiSetCat(cat) {
+  _wikiCat = cat;
+  renderWiki();
+}
+
+function wikiSearch(q) {
+  _wikiSearch = q;
+  renderWiki();
+}
+
+// ── Chat Intendant IA ─────────────────────────────────────────────────────────
+let _chatMessages = [];
+
+function renderIAChat() {
+  const el = $('page-content');
+  el.innerHTML = `
+    <div class="chat-container">
+      <div class="chat-messages" id="chat-messages">
+        <div class="chat-msg system"><div class="chat-msg-bubble">🏰 Bienvenue dans le salon privé de l'Intendant de la Compagnie du Fjord. Posez vos questions sur le stock, les commandes, le lore, les tarifs… L'Intendant connaît tout en temps réel.</div></div>
+      </div>
+      <div class="chat-input-row">
+        <textarea class="chat-input" id="chat-input" placeholder="Écrivez votre message… (Entrée pour envoyer, Shift+Entrée pour saut de ligne)" rows="1"></textarea>
+        <button class="btn" id="chat-send" onclick="chatSend()">Envoyer</button>
+        <button class="btn btn-secondary" onclick="chatClear()" title="Effacer la mémoire">🗑️</button>
+      </div>
+    </div>`;
+
+  const input = $('chat-input');
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chatSend(); }
+  });
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  });
+
+  // Remonter l'historique existant
+  _chatMessages.forEach(m => chatAppend(m.role, m.content));
+}
+
+function chatAppend(role, content, loading = false) {
+  const wrap = $('chat-messages');
+  if (!wrap) return;
+  const div = document.createElement('div');
+  div.className = `chat-msg ${role === 'user' ? 'user' : 'bot'}`;
+  if (loading) div.id = 'chat-loading';
+  const avatar = role === 'user'
+    ? `<img class="chat-msg-avatar" src="${window._me?.avatar || ''}" style="width:36px;height:36px;border-radius:50%;object-fit:cover">`
+    : `<div class="chat-msg-avatar">🏰</div>`;
+  div.innerHTML = `${avatar}<div class="chat-msg-bubble">${loading ? '<div class="chat-typing"><span></span><span></span><span></span> L\'Intendant réfléchit…</div>' : escHtml(content)}</div>`;
+  wrap.appendChild(div);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+}
+
+async function chatSend() {
+  const input = $('chat-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+  input.style.height = 'auto';
+
+  _chatMessages.push({ role: 'user', content: msg });
+  chatAppend('user', msg);
+  chatAppend('bot', '', true);
+  $('chat-send').disabled = true;
+
+  try {
+    const data = await post('/api/ia/chat', { message: msg });
+    const loading = $('chat-loading');
+    if (loading) loading.remove();
+    _chatMessages.push({ role: 'assistant', content: data.reponse });
+    chatAppend('bot', data.reponse);
+  } catch (e) {
+    const loading = $('chat-loading');
+    if (loading) loading.remove();
+    chatAppend('bot', '❌ Erreur : ' + e.message);
+  } finally {
+    $('chat-send').disabled = false;
+    $('chat-input')?.focus();
+  }
+}
+
+async function chatClear() {
+  if (!confirm('Effacer la mémoire conversationnelle ? L\'Intendant repartira de zéro.')) return;
+  await fetch('/api/ia/history', { method: 'DELETE' });
+  _chatMessages = [];
+  renderIAChat();
+  toast('Mémoire effacée');
+}
+
+// ── Analyse d'image ───────────────────────────────────────────────────────────
+let _analyserFile = null;
+
+function renderAnalyser() {
+  const el = $('page-content');
+  el.innerHTML = `
+    <div style="max-width:700px;margin:0 auto">
+      <div class="analyser-dropzone" id="analyser-drop" onclick="$('analyser-file').click()" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" ondrop="analyserDrop(event)">
+        <input type="file" id="analyser-file" accept="image/*" onchange="analyserSelect(this.files[0])">
+        <div style="font-size:48px;margin-bottom:12px">🖼️</div>
+        <div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:6px">Déposez une image ou cliquez pour choisir</div>
+        <div style="font-size:13px;color:var(--text-muted)">PNG, JPG, WEBP, GIF — Inventaires, cartes, screenshots Minecraft…</div>
+      </div>
+      <div class="analyser-preview" id="analyser-preview" style="display:none"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
+        <input class="form-input" id="analyser-question" placeholder="Question sur l'image (optionnel) : ex. 'Quelles ressources me manquent ?'" style="flex:1;min-width:200px">
+        <button class="btn" id="analyser-btn" onclick="analyserRun()" disabled>🔍 Analyser</button>
+      </div>
+      <div id="analyser-result" style="display:none" class="analyser-result"></div>
+    </div>`;
+}
+
+function analyserDrop(e) {
+  e.preventDefault();
+  $('analyser-drop').classList.remove('drag');
+  const file = e.dataTransfer.files[0];
+  if (file?.type.startsWith('image/')) analyserSelect(file);
+}
+
+function analyserSelect(file) {
+  if (!file) return;
+  _analyserFile = file;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const preview = $('analyser-preview');
+    preview.innerHTML = `<img src="${ev.target.result}" alt="preview">`;
+    preview.style.display = 'flex';
+  };
+  reader.readAsDataURL(file);
+  $('analyser-btn').disabled = false;
+  $('analyser-drop').querySelector('div').textContent = file.name;
+}
+
+async function analyserRun() {
+  if (!_analyserFile) return;
+  const btn = $('analyser-btn');
+  const res  = $('analyser-result');
+  btn.disabled = true;
+  btn.textContent = '⏳ Analyse en cours…';
+  res.style.display = 'none';
+
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = e => resolve(e.target.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(_analyserFile);
+    });
+
+    const data = await post('/api/ia/analyser', {
+      imageBase64: base64,
+      contentType: _analyserFile.type,
+      question: $('analyser-question').value.trim() || null,
+    });
+
+    res.style.display = 'block';
+    res.innerHTML = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">🔍 Analyse par LLaMA 3.2 90B Vision</div>${escHtml(data.reponse)}`;
+  } catch (e) {
+    res.style.display = 'block';
+    res.textContent = '❌ Erreur : ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 Analyser';
+  }
+}
+
+// ── Négociation ───────────────────────────────────────────────────────────────
+function renderNegocier() {
+  const el = $('page-content');
+  el.innerHTML = `
+    <div style="max-width:600px;margin:0 auto">
+      <p style="color:var(--text-muted);margin-bottom:20px">L'IA analyse une offre et donne un verdict tranché : <b>ACCEPTER</b>, <b>CONTRE-PROPOSER</b> ou <b>REFUSER</b>, basé sur le stock, les prix régionaux et l'historique des transactions.</p>
+      <div class="form-grid" style="margin-bottom:12px">
+        <div>
+          <label class="form-label">Ressource</label>
+          <input class="form-input" id="neg-ressource" placeholder="ex: Fer, Bois, Blé…">
+        </div>
+        <div>
+          <label class="form-label">Quantité</label>
+          <input class="form-input" id="neg-quantite" type="number" min="1" placeholder="100">
+        </div>
+        <div>
+          <label class="form-label">Prix total proposé (🟤 bronze)</label>
+          <input class="form-input" id="neg-prix" type="number" min="1" placeholder="400">
+        </div>
+        <div>
+          <label class="form-label">Type de transaction</label>
+          <select class="form-input" id="neg-type">
+            <option value="achat">🛒 Achat (quelqu'un nous vend)</option>
+            <option value="vente">💰 Vente (on vend à quelqu'un)</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-bottom:16px">
+        <label class="form-label">Contexte supplémentaire (optionnel)</label>
+        <input class="form-input" id="neg-contexte" placeholder="ex: urgent, client VIP, région Yuhang…">
+      </div>
+      <button class="btn" id="neg-btn" onclick="negocierRun()">🤝 Analyser l'offre</button>
+      <div id="neg-result" style="display:none"></div>
+    </div>`;
+}
+
+async function negocierRun() {
+  const ressource = $('neg-ressource').value.trim();
+  const quantite  = parseFloat($('neg-quantite').value);
+  const prix      = parseInt($('neg-prix').value);
+  const type      = $('neg-type').value;
+  const contexte  = $('neg-contexte').value.trim();
+
+  if (!ressource || !quantite || !prix) return toast('Remplissez tous les champs obligatoires', 'error');
+
+  const btn = $('neg-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Analyse en cours…';
+
+  try {
+    const data = await post('/api/ia/negocier', { ressource, quantite, prix, type, contexte });
+    const isAccept = /ACCEPTER/i.test(data.reponse);
+    const isRefus  = /REFUSER/i.test(data.reponse);
+    const cls  = isAccept ? 'accept' : isRefus ? 'refuse' : 'counter';
+    const icon = isAccept ? '✅' : isRefus ? '❌' : '🔄';
+    const prixU = data.prixUnitaire;
+    const prixC = data.stockPrix;
+
+    const res = $('neg-result');
+    res.style.display = 'block';
+    res.innerHTML = `
+      <div class="negocier-result ${cls}">
+        <div class="negocier-verdict">${icon} ${isAccept ? 'ACCEPTER' : isRefus ? 'REFUSER' : 'CONTRE-PROPOSER'}</div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;font-size:13px;color:var(--text-muted)">
+          <span>Prix proposé : <b>${prix}🟤</b> (${prixU}🟤/u)</span>
+          ${prixC ? `<span>Prix catalogue : <b>${prixC}🟤/u</b></span>` : ''}
+        </div>
+        <div style="white-space:pre-wrap;font-size:14px;line-height:1.7">${escHtml(data.reponse)}</div>
+      </div>`;
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🤝 Analyser l\'offre';
+  }
+}
+
+// ── Bourse ────────────────────────────────────────────────────────────────────
+function renderBourse() {
+  const el = $('page-content');
+  el.innerHTML = `
+    <div style="max-width:500px;margin:0 auto">
+      <div class="card" style="margin-bottom:24px">
+        <h3 style="margin-bottom:16px">🔄 Convertir un montant</h3>
+        <div style="display:flex;gap:10px;align-items:flex-end">
+          <div style="flex:1">
+            <label class="form-label">Montant en bronze 🟤</label>
+            <input class="form-input" id="bourse-montant" type="number" min="0" placeholder="1250" oninput="bourseConvertir()">
+          </div>
+        </div>
+        <div id="bourse-conv-result" style="margin-top:16px;display:none" class="bourse-result"></div>
+      </div>
+      <div class="card">
+        <h3 style="margin-bottom:16px">🧮 Calculer le prix d'un achat</h3>
+        <div class="form-grid" style="margin-bottom:12px">
+          <div class="field">
+            <label>Ressource</label>
+            <input id="bourse-ressource" placeholder="ex: Fer">
+          </div>
+          <div class="field">
+            <label>Quantité</label>
+            <input id="bourse-quantite" type="number" min="1" placeholder="50">
+          </div>
+        </div>
+        <button class="btn" onclick="bourseCalculer()">Calculer</button>
+        <div id="bourse-calc-result" style="margin-top:16px;display:none" class="bourse-result"></div>
+      </div>
+      <div class="card" style="margin-top:24px">
+        <h3 style="margin-bottom:10px">📖 Rappel monétaire</h3>
+        <div style="font-size:14px;color:var(--text-muted);line-height:2">
+          🟤 1 Bronze = 1 écu (Vyldra)<br>
+          ⚪ 1 Argent = 10 Bronze<br>
+          🟡 1 Or = 100 Bronze = 10 Argent
+        </div>
+      </div>
+    </div>`;
+}
+
+function bourseConvertir() {
+  const montant = parseInt($('bourse-montant').value) || 0;
+  const or     = Math.floor(montant / 100);
+  const argent = Math.floor((montant % 100) / 10);
+  const bronze = montant % 10;
+  const res = $('bourse-conv-result');
+  res.style.display = 'block';
+  res.innerHTML = `${or > 0 ? or + ' 🟡' : ''} ${argent > 0 ? argent + ' ⚪' : ''} ${bronze > 0 ? bronze + ' 🟤' : ''}`.trim() || '0 🟤';
+}
+
+async function bourseCalculer() {
+  const ressource = $('bourse-ressource').value.trim();
+  const quantite  = $('bourse-quantite').value;
+  if (!ressource || !quantite) return toast('Remplissez la ressource et la quantité', 'error');
+  try {
+    const d = await get(`/api/bourse/calculer?ressource=${encodeURIComponent(ressource)}&quantite=${quantite}`);
+    const res = $('bourse-calc-result');
+    res.style.display = 'block';
+    res.innerHTML = `<div style="font-size:14px;color:var(--text-muted);margin-bottom:8px">${quantite}× ${ressource} à ${d.prix_unitaire}🟤/${d.unite}</div>${d.or > 0 ? d.or + ' 🟡 ' : ''}${d.argent > 0 ? d.argent + ' ⚪ ' : ''}${d.bronze > 0 ? d.bronze + ' 🟤' : ''} <span style="font-size:16px;color:var(--text-muted)">(${d.total}🟤)</span>`;
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ── Contrats ──────────────────────────────────────────────────────────────────
+let _contratFiltre = 'ouverts';
+
+const STATUT_LABEL = { ouvert:'📢 Ouvert', accepte:'🤝 Accepté', en_cours:'⚒️ En cours', livre:'✅ Livré', expire:'⌛ Expiré', annule:'❌ Annulé', litige:'⚠️ Litige' };
+const STATUT_CLASS = { ouvert:'ouvert', accepte:'accepte', en_cours:'en_cours', livre:'livre', expire:'expire', annule:'annule', litige:'litige' };
+
+async function renderContrats() {
+  const el = $('page-content');
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:20px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${[['ouverts','📢 Ouverts'],['miens','👤 Mes contrats'],['all','📋 Tous']].map(([f,l]) =>
+          `<button class="wiki-filter${_contratFiltre===f?' active':''}" onclick="contratSetFiltre('${f}')">${l}</button>`
+        ).join('')}
+      </div>
+      <button class="btn" onclick="contratShowForm()">+ Nouveau contrat</button>
+    </div>
+    <div id="contrat-form" style="display:none" class="card" style="margin-bottom:20px"></div>
+    <div id="contrats-list"><div class="loading">Chargement…</div></div>`;
+
+  contratLoad();
+}
+
+async function contratLoad() {
+  const url = _contratFiltre === 'all' ? '/api/contrats/all' : `/api/contrats?filtre=${_contratFiltre}`;
+  const rows = await get(url).catch(() => []);
+  const el = $('contrats-list');
+  if (!rows.length) { el.innerHTML = '<div class="empty-state">Aucun contrat.</div>'; return; }
+
+  el.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px">` +
+    rows.map(c => {
+      const ech = new Date(c.echeance_le.replace(' ','T')+'Z');
+      const ts  = Math.floor(ech.getTime()/1000);
+      const isMe = c.vendeur_id === window._me?.id || c.acheteur_id === window._me?.id;
+      return `
+        <div class="contrat-card">
+          <div class="contrat-card-header">
+            <span class="contrat-id">#${String(c.id).padStart(4,'0')}</span>
+            <span class="contrat-statut statut-${STATUT_CLASS[c.statut]??'ouvert'}">${STATUT_LABEL[c.statut]??c.statut}</span>
+          </div>
+          <div class="contrat-ressource">${c.ressource} ×${c.quantite} ${c.unite}</div>
+          <div class="contrat-meta">
+            <span>💰 <b>${c.prix_total}🟤</b></span>
+            <span>📅 Échéance : <b>${ech.toLocaleDateString('fr-FR')}</b></span>
+            ${c.penalite > 0 ? `<span>⚠️ Pénalité : ${c.penalite}🟤</span>` : ''}
+          </div>
+          <div style="font-size:13px;color:var(--text-muted)">Vendeur : <b>${c.vendeur_pseudo}</b>${c.acheteur_pseudo ? ` · Acheteur : <b>${c.acheteur_pseudo}</b>` : ' · <i>Non accepté</i>'}</div>
+          ${c.note ? `<div style="font-size:12px;color:var(--text-muted);font-style:italic">"${c.note}"</div>` : ''}
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+            ${c.statut === 'ouvert' && c.vendeur_id !== window._me?.id ? `<button class="btn btn-sm" onclick="contratAccepter(${c.id})">🤝 Accepter</button>` : ''}
+            ${isMe && ['ouvert','accepte','en_cours'].includes(c.statut) ? `
+              <select class="form-input" style="font-size:12px;padding:4px 8px;height:auto" onchange="contratStatut(${c.id},this.value);this.value=''">
+                <option value="">Changer statut…</option>
+                ${c.statut === 'accepte' || c.statut === 'ouvert' ? '<option value="en_cours">⚒️ En cours</option>' : ''}
+                <option value="livre">✅ Livré</option>
+                <option value="annule">❌ Annuler</option>
+                <option value="litige">⚠️ Litige</option>
+              </select>` : ''}
+          </div>
+        </div>`;
+    }).join('') + '</div>';
+}
+
+function contratSetFiltre(f) {
+  _contratFiltre = f;
+  renderContrats();
+}
+
+function contratShowForm() {
+  const f = $('contrat-form');
+  f.style.display = f.style.display === 'none' ? 'block' : 'none';
+  if (f.style.display === 'none') return;
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+3);
+  f.innerHTML = `
+    <h3 style="margin-bottom:16px">📜 Nouveau contrat</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <div><label class="form-label">Ressource</label><input class="form-input" id="cf-ressource" placeholder="Fer, Bois…"></div>
+      <div><label class="form-label">Quantité</label><input class="form-input" id="cf-quantite" type="number" min="1"></div>
+      <div><label class="form-label">Prix total (🟤)</label><input class="form-input" id="cf-prix" type="number" min="1"></div>
+      <div><label class="form-label">Unité</label><input class="form-input" id="cf-unite" value="Unité"></div>
+      <div><label class="form-label">Échéance</label><input class="form-input" id="cf-echeance" type="datetime-local" value="${tomorrow.toISOString().slice(0,16)}"></div>
+      <div><label class="form-label">Pénalité de retard (🟤)</label><input class="form-input" id="cf-penalite" type="number" min="0" value="0"></div>
+    </div>
+    <div style="margin-bottom:12px"><label class="form-label">Note / conditions</label><input class="form-input" id="cf-note" placeholder="Conditions particulières…"></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn" onclick="contratCreer()">Créer le contrat</button>
+      <button class="btn btn-secondary" onclick="$('contrat-form').style.display='none'">Annuler</button>
+    </div>`;
+}
+
+async function contratCreer() {
+  const ressource  = $('cf-ressource').value.trim();
+  const quantite   = parseFloat($('cf-quantite').value);
+  const prix_total = parseInt($('cf-prix').value);
+  const unite      = $('cf-unite').value.trim() || 'Unité';
+  const echeance   = $('cf-echeance').value;
+  const penalite   = parseInt($('cf-penalite').value) || 0;
+  const note       = $('cf-note').value.trim();
+
+  if (!ressource || !quantite || !prix_total || !echeance) return toast('Remplissez tous les champs obligatoires', 'error');
+
+  try {
+    await post('/api/contrats', { ressource, quantite, unite, prix_total, penalite, note, echeance_le: echeance.replace('T',' ') });
+    toast('Contrat créé !');
+    $('contrat-form').style.display = 'none';
+    contratLoad();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function contratAccepter(id) {
+  try {
+    await put(`/api/contrats/${id}/accepter`, {});
+    toast('Contrat accepté !');
+    contratLoad();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function contratStatut(id, statut) {
+  if (!statut) return;
+  try {
+    await put(`/api/contrats/${id}/statut`, { statut });
+    toast('Statut mis à jour');
+    contratLoad();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ── Wiki Modal ────────────────────────────────────────────────────────────────
+function wikiModalOpen(idx) {
+  const e = WIKI_ENTRIES[idx];
+  if (!e) return;
+  const tagColors = { bot:'rgba(88,101,242,.2)', ia:'rgba(87,242,135,.2)', web:'rgba(255,165,0,.2)', admin:'rgba(237,66,69,.2)' };
+  const tagText   = { bot:'#7289da', ia:'#57f287', web:'#ffa500', admin:'#ed4245' };
+
+  const optionsHtml = e.options?.length ? `
+    <div class="wiki-modal-section">
+      <h4>Options & détails</h4>
+      <table class="wiki-modal-options">${e.options.map(([k,v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
+    </div>` : '';
+
+  const usageHtml = e.usage ? `
+    <div class="wiki-modal-section">
+      <h4>Utilisation</h4>
+      ${e.usage.split('|').map(u => `<div class="wiki-modal-usage">${u.trim()}</div>`).join('')}
+    </div>` : '';
+
+  const noteHtml = e.note ? `<div class="wiki-modal-note">💡 ${e.note}</div>` : '';
+
+  $('wiki-modal-body').innerHTML = `
+    <div class="wiki-modal-icon">${e.icon}</div>
+    <div class="wiki-modal-title">${e.title}</div>
+    <span class="wiki-modal-tag" style="background:${tagColors[e.tagClass]||'rgba(201,168,76,.2)'};color:${tagText[e.tagClass]||'var(--accent)'}">${e.tag}</span>
+    <div class="wiki-modal-desc">${e.desc}</div>
+    ${usageHtml}
+    ${optionsHtml}
+    ${noteHtml}`;
+
+  $('wiki-modal-overlay').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function wikiModalClose(e) {
+  if (e && e.target !== $('wiki-modal-overlay')) return;
+  $('wiki-modal-overlay').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') wikiModalClose(); });

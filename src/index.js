@@ -11,13 +11,38 @@ import { handleCatSelect as stockCat, handlePage as stockPage }                 
 import { handleProfSelect as recProf, handleNivSelect as recNiv, handlePage as recPage, handleDetail as recDetail } from './commands/recette.js';
 import { handleNav as tarifsNav } from './commands/tarifs.js';
 import { setupChannels, cfgGet, cfgSet, refreshStockEmbed, OWNER_ID } from './utils/setup.js';
+import { canWriteAny, hasPermission, getEffectivePermissions, detectLevelFromRoleNames, upsertUser, LEVEL_LABELS, DEFAULT_PERMISSIONS, PERMISSION_LABELS } from './utils/permissions.js';
 
 const WRITE_ROLES = new Set(['1502722412607836310', '1502788350665556149']);
+
 function canWrite(interaction) {
   if (interaction.user.id === OWNER_ID) return true;
+  // Check DB permissions first
+  if (canWriteAny(interaction.user.id, OWNER_ID)) return true;
+  // Fallback to legacy role check
   return interaction.member?.roles?.cache?.some(r => WRITE_ROLES.has(r.id)) ?? false;
 }
-import { enqueue, askNvidia, getQueueSize, splitResponse, buildSystemPrompt, buildVisitorPrompt } from './utils/ia.js';
+
+function canDo(interaction, permKey) {
+  if (interaction.user.id === OWNER_ID) return true;
+  if (hasPermission(interaction.user.id, permKey, OWNER_ID)) return true;
+  return interaction.member?.roles?.cache?.some(r => WRITE_ROLES.has(r.id)) ?? false;
+}
+
+// Sync member permissions to DB on interaction
+function syncMemberPerms(member) {
+  if (!member) return;
+  try {
+    const roleNames = [...(member.roles?.cache?.values() ?? [])].map(r => r.name);
+    const level = detectLevelFromRoleNames(roleNames);
+    const existing = db.prepare('SELECT permission_level FROM user_permissions WHERE user_id=?').get(member.user.id);
+    if (!existing) {
+      upsertUser(member.user.id, member.user.username, member.displayName ?? member.user.username, level);
+    }
+  } catch {}
+}
+import { enqueue, askNvidia, getQueueSize, splitResponse, buildSystemPrompt, buildVisitorPrompt, getHistory, addToHistory, updatePlayerProfile } from './utils/ia.js';
+import { startMonitoring, alerteNouvelleCommande, calcSegment, segmentEmoji } from './utils/alertes.js';
 import { getForumOffresId, getSellerPostId, setSellerPostId, removeSellerPost, isSellerDone } from './utils/forum.js';
 import {
   handleMetiersManageBase, handleMetiersManageSpec,
@@ -144,9 +169,9 @@ client.on('postIAEmbed', (type, channelId) => postIAEmbedForChannel(client, type
 client.once('clientReady', async () => {
   console.log(`⚓ La Compagnie du Fjord est en ligne — ${client.user.tag}`);
   await setupChannels(client);
-  // Post embeds dans les deux salons configurés
   await postIAEmbedForChannel(client, 'village',   cfgGet('AI_CHANNEL_ID'));
   await postIAEmbedForChannel(client, 'visiteurs', cfgGet('AI_CHANNEL_VISITEURS_ID'));
+  startMonitoring(client);
 });
 
 // ── Nouveau membre → rôle Visiteur automatique ────────────────────────────────
@@ -474,6 +499,9 @@ async function handleTicketRes(interaction) {
 
 client.on('interactionCreate', async interaction => {
   try {
+    // Sync member permissions to DB on each interaction
+    if (interaction.member) syncMemberPerms(interaction.member);
+
     // ── Modals ────────────────────────────────────────────────────────────────
     if (interaction.isModalSubmit()) {
       if (interaction.customId === 'ticket_modal') return await handleTicketModal(interaction);
@@ -546,31 +574,44 @@ client.on('interactionCreate', async interaction => {
         const page = parseInt(id.split(':')[1], 10);
         const AIDE_PAGES = [
           {
-            title: '📖 Commandes de la Compagnie — Membres & Visiteurs (1/2)',
+            title: '📖 Commandes — Membres & Visiteurs (1/3)',
             color: 0xC9A84C,
             fields: [
-              { name: '⚓ `/commander`',   value: 'Passer une commande de ressources auprès de la Compagnie.' },
-              { name: '📦 `/catalogue`',   value: 'Parcourir le catalogue complet des ressources disponibles à la vente.' },
-              { name: '📜 `/tarifs`',      value: 'Consulter les tarifs officiels de la Compagnie par métier.' },
-              { name: '🍺 `/recette`',     value: 'Rechercher une recette de craft du serveur, par profession ou par nom.' },
-              { name: '🪙 `/bourse`',      value: 'Convertir une somme en Or/Argent/Bronze, ou calculer un prix de revient.' },
-              { name: '🎒 `/macommande`',  value: 'Suivre l\'état de vos commandes en cours auprès de la Compagnie.' },
-              { name: '💰 `/prix`',        value: 'Tableau de prix comparatif entre toutes les régions de Vyldra.' },
-              { name: '⚒️ `/metiers`',     value: 'Choisir ou administrer les rôles métiers disponibles sur le serveur.' },
+              { name: '⚓ `/commander`',  value: 'Passer une commande de ressources auprès de la Compagnie.' },
+              { name: '📦 `/catalogue`',  value: 'Parcourir le catalogue complet des ressources disponibles à la vente.' },
+              { name: '📜 `/tarifs`',     value: 'Consulter les tarifs officiels de la Compagnie par métier.' },
+              { name: '🍺 `/recette`',    value: 'Rechercher une recette de craft du serveur, par profession ou par nom.' },
+              { name: '🪙 `/bourse`',     value: 'Convertir une somme en Or/Argent/Bronze, ou calculer un prix de revient.' },
+              { name: '🎒 `/macommande`', value: 'Suivre l\'état de vos commandes en cours auprès de la Compagnie.' },
+              { name: '💰 `/prix`',       value: 'Tableau de prix comparatif entre toutes les régions de Vyldra.' },
+              { name: '⚒️ `/metiers`',    value: 'Choisir ou administrer les rôles métiers disponibles sur le serveur.' },
             ],
           },
           {
-            title: '🛡️ Commandes de la Compagnie — Marchands (2/2)',
+            title: '🤖 Commandes IA & Avancées (2/3)',
+            color: 0x3dd68c,
+            fields: [
+              { name: '🏰 Intendant IA',      value: 'Écrivez dans le salon village ou visiteurs pour parler à l\'Intendant en temps réel (stock, prix, lore…).' },
+              { name: '🖼️ `/analyser`',       value: 'Envoyer une image (inventaire, carte, screenshot) — l\'IA l\'analyse et conseille.' },
+              { name: '🤝 `/negocier`',        value: 'Soumettre une offre commerciale à l\'IA pour un verdict : ACCEPTER / CONTRE-PROPOSER / REFUSER.' },
+              { name: '📜 `/contrat`',         value: 'Créer, consulter, accepter ou changer le statut d\'un contrat commercial entre joueurs.' },
+              { name: '💬 `/recap`',           value: 'Voir ou effacer votre historique de conversation avec l\'Intendant IA (25 messages par joueur).' },
+              { name: '🧾 `/inventaire`',      value: 'Consulter votre profil client : historique, réputation, segment (VIP/Régulier/Risque).' },
+              { name: '🌐 Tableau de bord',    value: '**[fjord.zenkai-police.tech](https://fjord.zenkai-police.tech/)** — Interface web complète : stock, commandes, trésorerie, IA, contrats, wiki.' },
+            ],
+          },
+          {
+            title: '🛡️ Commandes Marchands & Administration (3/3)',
             color: 0x1A3A5C,
             fields: [
-              { name: '📋 `/commandes`',   value: 'Gérer les commandes clients : passer, lister, consulter le détail, changer le statut.' },
-              { name: '🗄️ `/stock`',       value: 'Consulter et mettre à jour le stock de la Compagnie, avec alertes de seuil.' },
-              { name: '📈 `/marche`',      value: 'Appliquer des fluctuations de prix par catégorie (avec annonce RP automatique).' },
-              { name: '📯 `/annonce`',     value: 'Publier une annonce RP officielle (cargaison, enchère, recrutement, alerte…).' },
-              { name: '🧾 `/inventaire`',  value: 'Consulter l\'historique d\'achats et la réputation d\'un client.' },
-              { name: '👑 `/roles`',       value: 'Promouvoir ou rétrograder des membres dans la hiérarchie RP de la Compagnie.' },
-              { name: '💬 `/forum`',       value: 'Configurer les forums Discord pour les commandes acheteurs et offres vendeurs.' },
-              { name: '🤖 `/ia`',          value: 'Configurer les salons de l\'Intendant IA (membres et visiteurs).' },
+              { name: '📋 `/commandes`',  value: 'Gérer les commandes clients : lister, consulter, changer le statut, marquer livrée.' },
+              { name: '🗄️ `/stock`',      value: 'Consulter et mettre à jour le stock de la Compagnie, avec alertes de seuil bas.' },
+              { name: '📈 `/marche`',     value: 'Appliquer des fluctuations de prix par catégorie (avec annonce RP automatique).' },
+              { name: '📯 `/annonce`',    value: 'Publier une annonce RP officielle (cargaison, enchère, recrutement, alerte…).' },
+              { name: '👑 `/roles`',      value: 'Promouvoir ou rétrograder des membres dans la hiérarchie RP de la Compagnie.' },
+              { name: '🔔 `/alertes`',    value: 'Configurer le salon des alertes Intelligence Économique (stock critique, grosses commandes VIP…).' },
+              { name: '💬 `/forum`',      value: 'Configurer les forums Discord pour les commandes acheteurs et offres vendeurs.' },
+              { name: '🤖 `/ia`',         value: 'Configurer les salons de l\'Intendant IA (membres et visiteurs).' },
             ],
           },
         ];
@@ -791,11 +832,31 @@ client.on('messageCreate', async message => {
     .sort((a, b) => b.position - a.position)
     .map(r => r.name.replace(/^[\p{Emoji}\s]+/u, '').trim());
 
+  // Sync member to permissions DB and get their level
+  syncMemberPerms(member);
+  const { level: permLevel, permissions: effectivePerms } = getEffectivePermissions(message.author.id);
+  const levelLabel = LEVEL_LABELS[permLevel] ?? '🚪 Visiteur';
+  const grantedPerms = Object.entries(effectivePerms)
+    .filter(([, v]) => v)
+    .map(([k]) => PERMISSION_LABELS[k] ?? k);
+
+  // Segment client pour l'IA
+  const allCmds     = db.prepare("SELECT statut, prix_total FROM commandes WHERE client_id=?").all(message.author.id);
+  const nbLivrees   = allCmds.filter(c => c.statut === 'livree').length;
+  const nbAnnulees  = allCmds.filter(c => c.statut === 'annulee').length;
+  const totalBronze = allCmds.filter(c => c.statut === 'livree').reduce((s, c) => s + c.prix_total, 0);
+  const segment     = calcSegment(nbLivrees, nbAnnulees, totalBronze);
+
   const contexteJoueur =
     `[CONTEXTE DU JOUEUR QUI ENVOIE CE MESSAGE]\n` +
     `Nom RP : ${nomRP}\n` +
     `Pseudo Discord : ${username}\n` +
     (roles.length ? `Métiers / Spécialisations : ${roles.join(', ')}\n` : 'Aucun métier enregistré.\n') +
+    `Grade RP (niveau de permission) : ${levelLabel}\n` +
+    `Segment client : ${segmentEmoji(segment)} ${segment} (${nbLivrees} commandes livrées · ${totalBronze}🟤 dépensés)\n` +
+    (grantedPerms.length
+      ? `Permissions accordées : ${grantedPerms.join(' · ')}\n`
+      : 'Aucune permission d\'écriture accordée (lecture seule).\n') +
     `[FIN DU CONTEXTE — message du joueur ci-dessous]\n\n`;
 
   const positionFile = getQueueSize();
@@ -805,13 +866,19 @@ client.on('messageCreate', async message => {
       : `⏳ **${nomRP}**, réponse en cours de rédaction…`
   );
 
-  const systemPrompt = isVisitorChannel ? buildVisitorPrompt() : buildSystemPrompt();
+  const systemPrompt = isVisitorChannel ? buildVisitorPrompt(userId) : buildSystemPrompt(userId);
   const embedColor   = isVisitorChannel ? 0x5865F2 : 0xC9A84C;
   const authorName   = isVisitorChannel ? 'Commis aux Visiteurs — Compagnie du Fjord' : 'Intendant de la Compagnie';
 
+  const userId = message.author.id;
+  const history = getHistory(userId);
+  addToHistory(userId, 'user', contexteJoueur + message.content);
+
   enqueue(async () => {
     try {
-      const reponse = await askNvidia(contexteJoueur + message.content, systemPrompt);
+      const reponse = await askNvidia(contexteJoueur + message.content, systemPrompt, history);
+      addToHistory(userId, 'assistant', reponse);
+      updatePlayerProfile(userId, nomRP, message.content);
       const parts   = splitResponse(reponse);
 
       const makeEmbed = (content) => new EmbedBuilder()
@@ -821,7 +888,7 @@ client.on('messageCreate', async message => {
         .setFooter({ text: `En réponse à ${nomRP} · Suppression dans 60s` })
         .setTimestamp();
 
-      await waitMsg.edit({ content: '', embeds: [makeEmbed(parts[0])] });
+      await waitMsg.edit({ content: `# Réponse pour <@${message.author.id}>`, embeds: [makeEmbed(parts[0])] });
       autoDelete(waitMsg);
       for (const part of parts.slice(1)) {
         const m = await message.channel.send({ embeds: [makeEmbed(part)] });
