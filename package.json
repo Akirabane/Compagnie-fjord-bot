@@ -1,0 +1,21 @@
+{
+  "name": "compagnie-du-fjord",
+  "version": "1.0.0",
+  "description": "Bot Discord - La Compagnie du Fjord, dite les 3 Routes",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "web": "node web/server.js",
+    "deploy": "node src/deploy-commands.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.22.1",
+    "express-session": "^1.19.0"
+  },
+  "devDependencies": {
+    "xlsx": "^0.18.5"
+  }
+}
