@@ -235,6 +235,30 @@ db.exec(`
 `);
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS code_requests (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    requester_id   TEXT NOT NULL,
+    requester_name TEXT NOT NULL,
+    description    TEXT NOT NULL,
+    status         TEXT DEFAULT 'pending',
+    claude_output  TEXT DEFAULT NULL,
+    diff_preview   TEXT DEFAULT NULL,
+    error_msg      TEXT DEFAULT NULL,
+    resolved_by    TEXT DEFAULT NULL,
+    created_at     TEXT DEFAULT (datetime('now')),
+    resolved_at    TEXT DEFAULT NULL
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS action_queue (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    actions    TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`);
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     sid        TEXT PRIMARY KEY,
     data       TEXT NOT NULL,
@@ -349,6 +373,19 @@ export const stmts = {
   convPrune:      db.prepare("DELETE FROM conversation_history WHERE user_id=? AND id NOT IN (SELECT id FROM conversation_history WHERE user_id=? ORDER BY id DESC LIMIT ?)"),
   convDelete:     db.prepare("DELETE FROM conversation_history WHERE user_id=?"),
   convLastAt:     db.prepare("SELECT created_at FROM conversation_history WHERE user_id=? ORDER BY id DESC LIMIT 1"),
+
+  // Code requests
+  codeReqInsert:  db.prepare("INSERT INTO code_requests (requester_id,requester_name,description) VALUES (?,?,?)"),
+  codeReqGet:     db.prepare("SELECT * FROM code_requests WHERE id=?"),
+  codeReqList:    db.prepare("SELECT * FROM code_requests ORDER BY id DESC LIMIT 50"),
+  codeReqPending: db.prepare("SELECT * FROM code_requests WHERE status='pending' OR status='processing' ORDER BY id DESC"),
+  codeReqUpdate:  db.prepare("UPDATE code_requests SET status=?,claude_output=?,diff_preview=? WHERE id=?"),
+  codeReqResolve: db.prepare("UPDATE code_requests SET status=?,resolved_by=?,resolved_at=datetime('now'),error_msg=? WHERE id=?"),
+
+  // Action queue (actions Discord déclenchées depuis la webapp)
+  actionQueueInsert: db.prepare("INSERT INTO action_queue (actions) VALUES (?)"),
+  actionQueueAll:    db.prepare("SELECT * FROM action_queue ORDER BY id ASC"),
+  actionQueueDelete: db.prepare("DELETE FROM action_queue WHERE id=?"),
 
   // Sessions
   sessionGet:     db.prepare("SELECT data FROM sessions WHERE sid=? AND expires_at>?"),

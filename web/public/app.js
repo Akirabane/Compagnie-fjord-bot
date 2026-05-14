@@ -249,6 +249,7 @@ const PAGES = {
   negocier:   { title: '🤝 Négociation commerciale', render: renderNegocier },
   bourse:     { title: '💱 Bourse & Conversions',    render: renderBourse },
   contrats:   { title: '📜 Contrats',                render: renderContrats },
+  modifier:   { title: '🛠️ Demandes de modification', render: renderModifier },
 };
 
 let currentPage = 'dashboard';
@@ -262,6 +263,8 @@ function navigate(page) {
   $('page-content').innerHTML = '<div class="empty"><div class="spinner"></div></div>';
   Object.values(charts).forEach(c => c.destroy());
   for (const k of Object.keys(charts)) delete charts[k];
+  if (_modifierRefreshTimer) { clearInterval(_modifierRefreshTimer); _modifierRefreshTimer = null; }
+  if (_modifierPollTimer)    { clearInterval(_modifierPollTimer);    _modifierPollTimer    = null; }
   const p = Promise.resolve(PAGES[page].render());
   p.then(() => {
     const el = $('page-content');
@@ -2878,6 +2881,169 @@ function wikiModalClose(e) {
   if (e && e.target !== $('wiki-modal-overlay')) return;
   $('wiki-modal-overlay').style.display = 'none';
   document.body.style.overflow = '';
+}
+
+// ── MODIFIER ──────────────────────────────────────────────────────────────────
+let _modifierPollTimer = null;
+let _modifierRefreshTimer = null;
+
+function modifierStatusLabel(status) {
+  const map = {
+    pending:    ['badge-attente', '⏳ En attente'],
+    processing: ['badge-cours',   '🔄 Traitement…'],
+    ready:      ['badge-prete',   '📋 En attente de validation'],
+    applied:    ['badge-livree',  '✅ Appliquée'],
+    refused:    ['badge-annulee', '❌ Refusée'],
+    error:      ['badge-annulee', '⚠️ Erreur'],
+  };
+  const [cls, label] = map[status] ?? ['badge-attente', status];
+  return `<span class="badge ${cls}">${label}</span>`;
+}
+
+async function renderModifier() {
+  if (_modifierRefreshTimer) clearInterval(_modifierRefreshTimer);
+  _modifierRefreshTimer = null;
+
+  $('page-content').innerHTML = `
+  <div style="max-width:820px;margin:0 auto">
+    <div class="card" style="margin-bottom:24px">
+      <div class="card-title">📝 Soumettre une demande</div>
+      <p style="color:var(--text-dim);font-size:13px;margin:0 0 16px">
+        Décrivez la modification souhaitée. L'agent IA analysera le code et proposera les changements.
+        Toute modification nécessite une validation de l'administrateur avant d'être appliquée.
+      </p>
+      <textarea id="mod-desc" rows="5" placeholder="Ex: Ajoute une commande /ping qui répond avec la latence du bot…"
+        style="width:100%;box-sizing:border-box;background:var(--glass);border:1px solid var(--border);border-radius:10px;color:var(--text);padding:12px;font-size:14px;resize:vertical;font-family:inherit"></textarea>
+      <div style="margin-top:12px;display:flex;align-items:center;gap:12px">
+        <button class="btn btn-primary" onclick="submitModifier()">🚀 Envoyer la demande</button>
+        <span id="mod-submit-status" style="font-size:13px;color:var(--text-dim)"></span>
+      </div>
+    </div>
+
+    <div id="mod-active-card" style="display:none" class="card" style="margin-bottom:24px">
+      <div class="card-title">🔄 Demande en cours</div>
+      <div id="mod-active-content"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">📋 Historique des demandes</div>
+      <div id="mod-list"><div class="empty"><div class="spinner"></div></div></div>
+    </div>
+  </div>`;
+
+  await loadModifierList();
+  // Rafraîchissement auto toutes les 8s pour refléter les actions Discord
+  _modifierRefreshTimer = setInterval(() => {
+    if (currentPage !== 'modifier') { clearInterval(_modifierRefreshTimer); _modifierRefreshTimer = null; return; }
+    loadModifierList();
+  }, 8000);
+}
+
+async function loadModifierList() {
+  const el = $('mod-list');
+  if (!el) return;
+  try {
+    const data = await get('/api/modifier');
+    if (!data) return;
+    if (!data.length) {
+      el.innerHTML = '<div class="empty" style="padding:24px">Aucune demande pour l\'instant.</div>';
+      return;
+    }
+    el.innerHTML = data.map(r => `
+      <div class="mod-row" style="border-bottom:1px solid var(--border);padding:16px 0;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          ${modifierStatusLabel(r.status)}
+          <span style="font-weight:600;font-size:14px">#${r.id} — ${escHtml(r.requester_name)}</span>
+          <span style="color:var(--text-dim);font-size:12px;margin-left:auto">${r.created_at?.slice(0,16).replace('T',' ')}</span>
+        </div>
+        <div style="color:var(--text);font-size:13px;background:var(--glass);border-radius:8px;padding:10px">${escHtml(r.description)}</div>
+        ${r.diff_preview ? `<div style="color:var(--text-dim);font-size:12px;white-space:pre-line;background:var(--glass);border-radius:8px;padding:10px;border-left:3px solid var(--accent)">${escHtml(r.diff_preview)}</div>` : ''}
+        ${r.error_msg ? `<div style="color:#f87171;font-size:12px;padding:8px 10px;background:rgba(248,113,113,0.08);border-radius:8px">⚠️ ${escHtml(r.error_msg)}</div>` : ''}
+        ${window._isAdmin && r.status === 'ready' ? `
+          <div style="display:flex;gap:8px;margin-top:4px">
+            <button class="btn btn-primary" style="font-size:12px;padding:6px 14px" onclick="approveModifier(${r.id})">✅ Approuver & Appliquer</button>
+            <button class="btn" style="font-size:12px;padding:6px 14px;background:rgba(248,113,113,0.15);color:#f87171;border-color:rgba(248,113,113,0.3)" onclick="refuseModifier(${r.id})">❌ Refuser</button>
+          </div>` : ''}
+      </div>`).join('');
+  } catch (e) {
+    el.innerHTML = `<div class="empty" style="padding:24px;color:#f87171">Erreur : ${escHtml(e.message)}</div>`;
+  }
+}
+
+function escHtml(str) {
+  return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function submitModifier() {
+  const desc = $('mod-desc')?.value?.trim();
+  if (!desc) { toast('Décrivez votre demande avant d\'envoyer.', 'err'); return; }
+  const status = $('mod-submit-status');
+  if (status) status.textContent = '⏳ Envoi…';
+
+  try {
+    const data = await post('/api/modifier', { description: desc });
+    if (!data) return;
+    if ($('mod-desc')) $('mod-desc').value = '';
+    if (status) status.textContent = '';
+    toast('Demande envoyée — traitement en cours…');
+    showModifierPolling(data.id);
+    loadModifierList();
+  } catch (e) {
+    if (status) status.textContent = '';
+    toast(e.message, 'err');
+  }
+}
+
+function showModifierPolling(id) {
+  const card = $('mod-active-card');
+  const content = $('mod-active-content');
+  if (!card || !content) return;
+  card.style.display = 'block';
+
+  if (_modifierPollTimer) clearInterval(_modifierPollTimer);
+
+  const update = async () => {
+    try {
+      const d = await get(`/api/modifier/${id}/status`);
+      if (!d) return;
+      content.innerHTML = `
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+          ${modifierStatusLabel(d.status)}
+          <span style="font-size:13px;color:var(--text-dim)">Demande #${id}</span>
+        </div>
+        ${d.diff_preview ? `<div style="white-space:pre-line;font-size:13px;background:var(--glass);border-radius:8px;padding:12px;border-left:3px solid var(--accent)">${escHtml(d.diff_preview)}</div>` : '<div style="color:var(--text-dim);font-size:13px">L\'agent IA analyse votre demande…</div>'}
+        ${d.error_msg ? `<div style="color:#f87171;font-size:12px;margin-top:8px">⚠️ ${escHtml(d.error_msg)}</div>` : ''}`;
+
+      if (['applied','refused','error'].includes(d.status)) {
+        clearInterval(_modifierPollTimer);
+        _modifierPollTimer = null;
+        setTimeout(() => { if (card) card.style.display = 'none'; }, 4000);
+        loadModifierList();
+      }
+    } catch {}
+  };
+
+  update();
+  _modifierPollTimer = setInterval(update, 3000);
+}
+
+async function approveModifier(id) {
+  if (!confirm(`Approuver et appliquer la demande #${id} ?`)) return;
+  try {
+    const d = await post(`/api/modifier/${id}/approve`, {});
+    if (!d) return;
+    toast(`✅ Demande #${id} appliquée — ${d.files?.length ?? 0} fichier(s) modifié(s)`);
+    loadModifierList();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function refuseModifier(id) {
+  if (!confirm(`Refuser la demande #${id} ?`)) return;
+  try {
+    await post(`/api/modifier/${id}/refuse`, {});
+    toast(`Demande #${id} refusée.`);
+    loadModifierList();
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 document.addEventListener('keydown', e => { if (e.key === 'Escape') wikiModalClose(); });

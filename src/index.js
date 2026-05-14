@@ -11,15 +11,14 @@ import { handleCatSelect as stockCat, handlePage as stockPage }                 
 import { handleProfSelect as recProf, handleNivSelect as recNiv, handlePage as recPage, handleDetail as recDetail } from './commands/recette.js';
 import { handleNav as tarifsNav } from './commands/tarifs.js';
 import { setupChannels, cfgGet, cfgSet, refreshStockEmbed, OWNER_ID } from './utils/setup.js';
+import { approveRequest, refuseRequest, executeActions, drainActionQueue } from './utils/code-agent.js';
 import { canWriteAny, hasPermission, getEffectivePermissions, detectLevelFromRoleNames, upsertUser, LEVEL_LABELS, DEFAULT_PERMISSIONS, PERMISSION_LABELS } from './utils/permissions.js';
 
 const WRITE_ROLES = new Set(['1502722412607836310', '1502788350665556149']);
 
 function canWrite(interaction) {
   if (interaction.user.id === OWNER_ID) return true;
-  // Check DB permissions first
   if (canWriteAny(interaction.user.id, OWNER_ID)) return true;
-  // Fallback to legacy role check
   return interaction.member?.roles?.cache?.some(r => WRITE_ROLES.has(r.id)) ?? false;
 }
 
@@ -29,7 +28,6 @@ function canDo(interaction, permKey) {
   return interaction.member?.roles?.cache?.some(r => WRITE_ROLES.has(r.id)) ?? false;
 }
 
-// Sync member permissions to DB on interaction
 function syncMemberPerms(member) {
   if (!member) return;
   try {
@@ -84,7 +82,7 @@ const EMBEDS_IA = {
     title: '🏰 Intendant de la Compagnie — Salon Village',
     description:
       'Bienvenue dans le bureau de l\'Intendant, camarade !\n\n' +
-      'Ce salon est **réservé aux membres de la Compagnie**. Posez toutes vos questions à l\'Intendant IA : stock, commandes, trésorerie, recettes, prix par région, vie à Fjordheim, lore de Vyldra…\n​',
+      'Ce salon est **réservé aux membres de la Compagnie**. Posez toutes vos questions à l\'Intendant IA : stock, commandes, trésorerie, recettes, prix par région, vie à Fjordheim, lore de Vyldra…\n\u200b',
     color: 0xC9A84C,
     fields: [
       {
@@ -114,7 +112,7 @@ const EMBEDS_IA = {
     title: '🚪 Comptoir des Visiteurs — La Compagnie du Fjord',
     description:
       'Bienvenue à Fjordheim, voyageur !\n\n' +
-      'Je suis le commis aux visiteurs de la Compagnie du Fjord. Posez-moi vos questions sur **nos marchandises, nos prix, comment nous vendre vos ressources**, ou tout ce qui concerne la vie à Fjordheim et le monde de Vyldra.\n​',
+      'Je suis le commis aux visiteurs de la Compagnie du Fjord. Posez-moi vos questions sur **nos marchandises, nos prix, comment nous vendre vos ressources**, ou tout ce qui concerne la vie à Fjordheim et le monde de Vyldra.\n\u200b',
     color: 0x5865F2,
     fields: [
       {
@@ -163,15 +161,91 @@ async function postIAEmbedForChannel(client, type, channelId) {
   } catch (e) { console.error(`[IA embed ${type}]`, e); }
 }
 
-// Event déclenché par /ia village ou /ia visiteurs
 client.on('postIAEmbed', (type, channelId) => postIAEmbedForChannel(client, type, channelId));
+
+// ── Pages du salon d'aide (navigation unique) ─────────────────────────────────
+const AIDE_PAGES = [
+  {
+    title: '📖 Commandes — Membres & Visiteurs (1/3)',
+    color: 0xC9A84C,
+    fields: [
+      { name: '⚓ `/commander`',  value: 'Passer une commande de ressources auprès de la Compagnie.' },
+      { name: '📦 `/catalogue`',  value: 'Parcourir le catalogue complet des ressources disponibles à la vente.' },
+      { name: '📜 `/tarifs`',     value: 'Consulter les tarifs officiels de la Compagnie par métier.' },
+      { name: '🍺 `/recette`',    value: 'Rechercher une recette de craft du serveur, par profession ou par nom.' },
+      { name: '🪙 `/bourse`',     value: 'Convertir une somme en Or/Argent/Bronze, ou calculer un prix de revient.' },
+      { name: '🎒 `/macommande`', value: 'Suivre l\'état de vos commandes en cours auprès de la Compagnie.' },
+      { name: '💰 `/prix`',       value: 'Tableau de prix comparatif entre toutes les régions de Vyldra.' },
+      { name: '⚒️ `/metiers`',    value: 'Choisir ou administrer les rôles métiers disponibles sur le serveur.' },
+    ],
+  },
+  {
+    title: '🤖 Commandes IA & Avancées (2/3)',
+    color: 0x3dd68c,
+    fields: [
+      { name: '🏰 Intendant IA',      value: 'Écrivez dans le salon village ou visiteurs pour parler à l\'Intendant en temps réel (stock, prix, lore…).' },
+      { name: '🖼️ `/analyser`',       value: 'Envoyer une image (inventaire, carte, screenshot) — l\'IA l\'analyse et conseille.' },
+      { name: '🤝 `/negocier`',        value: 'Soumettre une offre commerciale à l\'IA pour un verdict : ACCEPTER / CONTRE-PROPOSER / REFUSER.' },
+      { name: '📜 `/contrat`',         value: 'Créer, consulter, accepter ou changer le statut d\'un contrat commercial entre joueurs.' },
+      { name: '💬 `/recap`',           value: 'Voir ou effacer votre historique de conversation avec l\'Intendant IA (25 messages par joueur).' },
+      { name: '🧾 `/inventaire`',      value: 'Consulter votre profil client : historique, réputation, segment (VIP/Régulier/Risque).' },
+      { name: '🌐 Tableau de bord',    value: '**[fjord.zenkai-police.tech](https://fjord.zenkai-police.tech/)** — Interface web complète : stock, commandes, trésorerie, IA, contrats, wiki.' },
+    ],
+  },
+  {
+    title: '🛡️ Commandes Marchands & Administration (3/3)',
+    color: 0x1A3A5C,
+    fields: [
+      { name: '📋 `/commandes`',  value: 'Gérer les commandes clients : lister, consulter, changer le statut, marquer livrée.' },
+      { name: '🗄️ `/stock`',      value: 'Consulter et mettre à jour le stock de la Compagnie, avec alertes de seuil bas.' },
+      { name: '📈 `/marche`',     value: 'Appliquer des fluctuations de prix par catégorie (avec annonce RP automatique).' },
+      { name: '📯 `/annonce`',    value: 'Publier une annonce RP officielle (cargaison, enchère, recrutement, alerte…).' },
+      { name: '👑 `/roles`',      value: 'Promouvoir ou rétrograder des membres dans la hiérarchie RP de la Compagnie.' },
+      { name: '🔔 `/alertes`',    value: 'Configurer le salon des alertes Intelligence Économique (stock critique, grosses commandes VIP…).' },
+      { name: '💬 `/forum`',      value: 'Configurer les forums Discord pour les commandes acheteurs et offres vendeurs.' },
+      { name: '🤖 `/ia`',         value: 'Configurer les salons de l\'Intendant IA (membres et visiteurs).' },
+    ],
+  },
+];
+
+function buildAideEmbed(page) {
+  const p = AIDE_PAGES[page];
+  const embed = new EmbedBuilder()
+    .setColor(p.color)
+    .setTitle(p.title)
+    .setDescription('🌐 **[Accéder au tableau de bord web](https://fjord.zenkai-police.tech/)**\n\nVoici la liste des commandes disponibles sur ce serveur. Utilisez les boutons pour naviguer entre les pages.')
+    .addFields(p.fields)
+    .setFooter({ text: '⚓ La Compagnie du Fjord — Les 3 Routes • Fjordheim, Empire de Skanor' })
+    .setTimestamp();
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`aide:${page - 1}`).setLabel('◀ Précédent').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+    new ButtonBuilder().setCustomId(`aide:${page + 1}`).setLabel('Suivant ▶').setStyle(ButtonStyle.Secondary).setDisabled(page === AIDE_PAGES.length - 1),
+  );
+  return { embed, row };
+}
+
+async function postAideEmbed(client) {
+  try {
+    const channel = await client.channels.fetch(AIDE_CHANNEL_ID).catch(() => null);
+    if (!channel?.isTextBased()) return;
+    const messages = await channel.messages.fetch({ limit: 50 });
+    for (const [, msg] of messages) {
+      if (msg.author.id === client.user.id) await msg.delete().catch(() => {});
+    }
+    const { embed, row } = buildAideEmbed(0);
+    await channel.send({ embeds: [embed], components: [row] });
+    console.log('[aide embed] Embed unique avec navigation posté dans le salon aide.');
+  } catch (e) { console.error('[aide embed]', e); }
+}
 
 client.once('clientReady', async () => {
   console.log(`⚓ La Compagnie du Fjord est en ligne — ${client.user.tag}`);
   await setupChannels(client);
   await postIAEmbedForChannel(client, 'village',   cfgGet('AI_CHANNEL_ID'));
   await postIAEmbedForChannel(client, 'visiteurs', cfgGet('AI_CHANNEL_VISITEURS_ID'));
+  await postAideEmbed(client);
   startMonitoring(client);
+  setInterval(() => drainActionQueue(client).catch(() => {}), 5000);
 });
 
 // ── Nouveau membre → rôle Visiteur automatique ────────────────────────────────
@@ -193,7 +267,6 @@ async function handleTicketModal(interaction) {
 
   await interaction.deferReply({ flags: 64 });
 
-  // Prix auto depuis stock si disponible
   const article  = db.prepare('SELECT * FROM stock WHERE LOWER(ressource)=?').get(ressource.toLowerCase());
   const prixTotal = article ? Math.round(article.prix_bronze * quantite) : 0;
 
@@ -204,10 +277,8 @@ async function handleTicketModal(interaction) {
   const commande = db.prepare('SELECT * FROM commandes WHERE id=?').get(result.lastInsertRowid);
   const num      = String(commande.id).padStart(4, '0');
 
-  // Réserver le stock immédiatement
   db.prepare('UPDATE stock SET quantite=MAX(0,quantite-?) WHERE LOWER(ressource)=?').run(quantite, ressource.toLowerCase());
 
-  // Créer le post forum acheteur
   let threadId = null;
   const { getForumCommandesId, getBuyerPostId, setBuyerPostId, removeBuyerPost } = await import('./utils/forum.js');
   const forumCommandesId = getForumCommandesId();
@@ -293,7 +364,6 @@ async function handleVenteModal(interaction) {
   const offre = db.prepare('SELECT * FROM offres_vente WHERE id=?').get(result.lastInsertRowid);
   const num   = String(offre.id).padStart(4, '0');
 
-  // Créer le post forum vendeur
   let threadId = null;
   const forumOffresId = getForumOffresId();
   if (forumOffresId) {
@@ -360,7 +430,6 @@ async function handleVenteStatut(interaction, id, statut) {
 
   db.prepare('UPDATE offres_vente SET statut=? WHERE id=?').run(statut, offre.id);
 
-  // Mettre à jour le message dans le forum post (retirer les boutons, changer couleur)
   if (offre.ticket_id && offre.ticket_msg_id) {
     try {
       const thread = await client.channels.fetch(offre.ticket_id);
@@ -371,7 +440,6 @@ async function handleVenteStatut(interaction, id, statut) {
     } catch {}
   }
 
-  // Supprimer le post forum si toutes les offres de ce vendeur sont traitées
   if (isSellerDone(offre.vendeur_id)) {
     try {
       const thread = await client.channels.fetch(offre.ticket_id);
@@ -391,7 +459,6 @@ async function handleVenteStatut(interaction, id, statut) {
     } catch {}
   }
 
-  // Si accepté : ajouter au stock si la ressource existe
   if (statut === 'accepte') {
     try {
       const existing = db.prepare('SELECT * FROM stock WHERE LOWER(ressource)=?').get(offre.ressource.toLowerCase());
@@ -499,7 +566,6 @@ async function handleTicketRes(interaction) {
 
 client.on('interactionCreate', async interaction => {
   try {
-    // Sync member permissions to DB on each interaction
     if (interaction.member) syncMemberPerms(interaction.member);
 
     // ── Modals ────────────────────────────────────────────────────────────────
@@ -528,7 +594,6 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isButton()) {
       if (interaction.customId === 'noop') return interaction.deferUpdate();
 
-      // Boutons accessibles à tous (création + métiers)
       if (interaction.customId.startsWith('tarifs_nav:')) {
         const metier = interaction.customId.split(':')[1];
         return await tarifsNav(interaction, metier);
@@ -559,10 +624,8 @@ client.on('interactionCreate', async interaction => {
         return await interaction.showModal(modal);
       }
 
-      // Boutons de gestion : rôles requis
       if (!canWrite(interaction)) return interaction.reply({ content: '🔒 Accès en lecture seule.', flags: 64 });
 
-      // Boutons accepter/refuser offre de vente
       if (interaction.customId.startsWith('vente_statut:')) {
         const [, offreId, statut] = interaction.customId.split(':');
         return await handleVenteStatut(interaction, offreId, statut);
@@ -570,62 +633,48 @@ client.on('interactionCreate', async interaction => {
 
       const id = interaction.customId;
 
+      // ── Modifier : approbation / refus ──────────────────────────────────
+      if (id.startsWith('modifier_approve:') || id.startsWith('modifier_refuse:')) {
+        if (interaction.user.id !== OWNER_ID) {
+          return interaction.reply({ content: '🔒 Seul le propriétaire peut valider les demandes.', flags: 64 });
+        }
+        const reqId = parseInt(id.split(':')[1], 10);
+        const isApprove = id.startsWith('modifier_approve:');
+
+        await interaction.deferUpdate();
+
+        if (!isApprove) {
+          refuseRequest(reqId, interaction.user.username);
+          return interaction.editReply({
+            embeds: [new EmbedBuilder().setColor(0xf85149).setTitle(`❌ Demande #${reqId} refusée`).setDescription('Aucune modification appliquée.')],
+            components: [],
+          });
+        }
+
+        try {
+          const { summary, files, restarted, backupDir, actions } = await approveRequest(reqId, interaction.user.username);
+          if (actions?.length) await executeActions(actions, client);
+          const embed = new EmbedBuilder()
+            .setColor(0x3dd68c)
+            .setTitle(`✅ Demande #${reqId} appliquée`)
+            .setDescription(`**${summary}**`)
+            .addFields(
+              { name: '📝 Fichiers modifiés', value: files.map(f => `\`${f}\``).join('\n') || '—', inline: true },
+              { name: '🔄 Redémarrages', value: restarted.length ? restarted.join(', ') : 'Aucun', inline: true },
+              { name: '💾 Sauvegarde', value: `\`${backupDir.split('/').pop()}\``, inline: true }
+            );
+          return interaction.editReply({ embeds: [embed], components: [] });
+        } catch (err) {
+          return interaction.editReply({
+            embeds: [new EmbedBuilder().setColor(0xf85149).setTitle('❌ Erreur lors de l\'application').setDescription(err.message)],
+            components: [],
+          });
+        }
+      }
+
       if (id.startsWith('aide:')) {
         const page = parseInt(id.split(':')[1], 10);
-        const AIDE_PAGES = [
-          {
-            title: '📖 Commandes — Membres & Visiteurs (1/3)',
-            color: 0xC9A84C,
-            fields: [
-              { name: '⚓ `/commander`',  value: 'Passer une commande de ressources auprès de la Compagnie.' },
-              { name: '📦 `/catalogue`',  value: 'Parcourir le catalogue complet des ressources disponibles à la vente.' },
-              { name: '📜 `/tarifs`',     value: 'Consulter les tarifs officiels de la Compagnie par métier.' },
-              { name: '🍺 `/recette`',    value: 'Rechercher une recette de craft du serveur, par profession ou par nom.' },
-              { name: '🪙 `/bourse`',     value: 'Convertir une somme en Or/Argent/Bronze, ou calculer un prix de revient.' },
-              { name: '🎒 `/macommande`', value: 'Suivre l\'état de vos commandes en cours auprès de la Compagnie.' },
-              { name: '💰 `/prix`',       value: 'Tableau de prix comparatif entre toutes les régions de Vyldra.' },
-              { name: '⚒️ `/metiers`',    value: 'Choisir ou administrer les rôles métiers disponibles sur le serveur.' },
-            ],
-          },
-          {
-            title: '🤖 Commandes IA & Avancées (2/3)',
-            color: 0x3dd68c,
-            fields: [
-              { name: '🏰 Intendant IA',      value: 'Écrivez dans le salon village ou visiteurs pour parler à l\'Intendant en temps réel (stock, prix, lore…).' },
-              { name: '🖼️ `/analyser`',       value: 'Envoyer une image (inventaire, carte, screenshot) — l\'IA l\'analyse et conseille.' },
-              { name: '🤝 `/negocier`',        value: 'Soumettre une offre commerciale à l\'IA pour un verdict : ACCEPTER / CONTRE-PROPOSER / REFUSER.' },
-              { name: '📜 `/contrat`',         value: 'Créer, consulter, accepter ou changer le statut d\'un contrat commercial entre joueurs.' },
-              { name: '💬 `/recap`',           value: 'Voir ou effacer votre historique de conversation avec l\'Intendant IA (25 messages par joueur).' },
-              { name: '🧾 `/inventaire`',      value: 'Consulter votre profil client : historique, réputation, segment (VIP/Régulier/Risque).' },
-              { name: '🌐 Tableau de bord',    value: '**[fjord.zenkai-police.tech](https://fjord.zenkai-police.tech/)** — Interface web complète : stock, commandes, trésorerie, IA, contrats, wiki.' },
-            ],
-          },
-          {
-            title: '🛡️ Commandes Marchands & Administration (3/3)',
-            color: 0x1A3A5C,
-            fields: [
-              { name: '📋 `/commandes`',  value: 'Gérer les commandes clients : lister, consulter, changer le statut, marquer livrée.' },
-              { name: '🗄️ `/stock`',      value: 'Consulter et mettre à jour le stock de la Compagnie, avec alertes de seuil bas.' },
-              { name: '📈 `/marche`',     value: 'Appliquer des fluctuations de prix par catégorie (avec annonce RP automatique).' },
-              { name: '📯 `/annonce`',    value: 'Publier une annonce RP officielle (cargaison, enchère, recrutement, alerte…).' },
-              { name: '👑 `/roles`',      value: 'Promouvoir ou rétrograder des membres dans la hiérarchie RP de la Compagnie.' },
-              { name: '🔔 `/alertes`',    value: 'Configurer le salon des alertes Intelligence Économique (stock critique, grosses commandes VIP…).' },
-              { name: '💬 `/forum`',      value: 'Configurer les forums Discord pour les commandes acheteurs et offres vendeurs.' },
-              { name: '🤖 `/ia`',         value: 'Configurer les salons de l\'Intendant IA (membres et visiteurs).' },
-            ],
-          },
-        ];
-        const p = AIDE_PAGES[page];
-        const embed = new EmbedBuilder()
-          .setColor(p.color)
-          .setTitle(p.title)
-          .setDescription('🌐 **[Accéder au tableau de bord web](https://fjord.zenkai-police.tech/)**\n\nVoici la liste des commandes disponibles sur ce serveur. Utilisez les boutons pour naviguer entre les pages.')
-          .addFields(p.fields)
-          .setFooter({ text: '⚓ La Compagnie du Fjord — Les 3 Routes • Fjordheim, Empire de Skanor' });
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`aide:${page - 1}`).setLabel('◀ Précédent').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
-          new ButtonBuilder().setCustomId(`aide:${page + 1}`).setLabel('Suivant ▶').setStyle(ButtonStyle.Secondary).setDisabled(page === AIDE_PAGES.length - 1),
-        );
+        const { embed, row } = buildAideEmbed(page);
         return interaction.update({ embeds: [embed], components: [row] });
       }
 
@@ -687,13 +736,11 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
     const cmd = client.commands.get(interaction.commandName);
     if (!cmd) return;
-    // Commandes lecture seule accessibles à tous
     const READ_CMDS = new Set(['catalogue', 'stock', 'prix', 'recette']);
     if (!READ_CMDS.has(interaction.commandName) && !canWrite(interaction)) {
       return interaction.reply({ content: '🔒 Accès en lecture seule.', flags: 64 });
     }
     await cmd.execute(interaction);
-    // Auto-suppression après 5 min (commandes non permanentes et non éphémères)
     const NO_AUTODELETE = new Set(['annonce', 'ia', 'forum', 'metiers']);
     if (!NO_AUTODELETE.has(interaction.commandName)) {
       try {
@@ -781,7 +828,8 @@ async function cleanAideChannel() {
     if (!channel?.isTextBased()) return;
     const messages = await channel.messages.fetch({ limit: 100 });
     const cutoff = Date.now() - AIDE_MAX_AGE_MS;
-    const old = messages.filter(m => m.createdTimestamp < cutoff);
+    // Conserver les messages du bot (embeds constants) — supprimer uniquement les messages utilisateurs expirés
+    const old = messages.filter(m => !m.author.bot && m.createdTimestamp < cutoff);
     for (const msg of old.values()) {
       await msg.delete().catch(() => {});
     }
@@ -810,10 +858,8 @@ client.on('messageCreate', async message => {
 
   const isVisitorChannel = isVisiteurs;
 
-  // Supprimer le message de l'utilisateur immédiatement
   message.delete().catch(e => console.error('[IA] Suppression message échouée:', e.message));
 
-  // ── Contexte joueur ───────────────────────────────────────────────────────
   const member      = message.member;
   const displayName = member?.displayName ?? message.author.globalName ?? message.author.username;
   const username    = message.author.username;
@@ -823,7 +869,6 @@ client.on('messageCreate', async message => {
     nomRP = displayName.split('|').pop().trim();
   }
 
-  // Uniquement métiers et spécialisations (pas les grades comme Paysan, Écuyer…)
   const roles = (member?.roles?.cache ?? new Map())
     .filter(r => {
       const clean = r.name.replace(/^[\p{Emoji}\s]+/u, '').trim();
@@ -832,7 +877,6 @@ client.on('messageCreate', async message => {
     .sort((a, b) => b.position - a.position)
     .map(r => r.name.replace(/^[\p{Emoji}\s]+/u, '').trim());
 
-  // Sync member to permissions DB and get their level
   syncMemberPerms(member);
   const { level: permLevel, permissions: effectivePerms } = getEffectivePermissions(message.author.id);
   const levelLabel = LEVEL_LABELS[permLevel] ?? '🚪 Visiteur';
@@ -840,7 +884,6 @@ client.on('messageCreate', async message => {
     .filter(([, v]) => v)
     .map(([k]) => PERMISSION_LABELS[k] ?? k);
 
-  // Segment client pour l'IA
   const allCmds     = db.prepare("SELECT statut, prix_total FROM commandes WHERE client_id=?").all(message.author.id);
   const nbLivrees   = allCmds.filter(c => c.statut === 'livree').length;
   const nbAnnulees  = allCmds.filter(c => c.statut === 'annulee').length;
@@ -866,11 +909,11 @@ client.on('messageCreate', async message => {
       : `⏳ **${nomRP}**, réponse en cours de rédaction…`
   );
 
+  const userId = message.author.id;
   const systemPrompt = isVisitorChannel ? buildVisitorPrompt(userId) : buildSystemPrompt(userId);
   const embedColor   = isVisitorChannel ? 0x5865F2 : 0xC9A84C;
   const authorName   = isVisitorChannel ? 'Commis aux Visiteurs — Compagnie du Fjord' : 'Intendant de la Compagnie';
 
-  const userId = message.author.id;
   const history = getHistory(userId);
   addToHistory(userId, 'user', contexteJoueur + message.content);
 

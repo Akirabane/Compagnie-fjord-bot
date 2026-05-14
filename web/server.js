@@ -14,6 +14,7 @@ import {
 } from '../src/utils/permissions.js';
 import { askNvidia, buildSystemPrompt, getHistory, addToHistory, updatePlayerProfile } from '../src/utils/ia.js';
 import { calcSegment, segmentEmoji } from '../src/utils/alertes.js';
+import { createRequest, processRequest, approveRequest, refuseRequest, storePendingActions } from '../src/utils/code-agent.js';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const app        = express();
@@ -1292,6 +1293,75 @@ app.get('/api/bourse/calculer', requireAuth, (req, res) => {
 });
 
 // ── SPA ───────────────────────────────────────────────────────────────────────
+// ── Demandes de modification de code ──────────────────────────────────────────
+
+// Soumettre une demande
+app.post('/api/modifier', requireAuth, async (req, res) => {
+  const { description } = req.body;
+  if (!description?.trim()) return res.status(400).json({ error: 'Description requise.' });
+  if (description.trim().length < 10) return res.status(400).json({ error: 'Description trop courte.' });
+
+  try {
+    const requestId = createRequest(req.session.user.id, req.session.user.nick, description.trim());
+
+    // Lance le traitement en arrière-plan
+    processRequest(requestId).catch(err => console.error('[code-agent] erreur traitement:', err));
+
+    res.json({ id: requestId, status: 'processing' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Lister les demandes
+app.get('/api/modifier', requireAuth, (req, res) => {
+  if (!req.session.user.isAdmin) return res.status(403).json({ error: 'Admin requis.' });
+  const rows = stmts.codeReqList.all();
+  res.json(rows);
+});
+
+// Détail d'une demande
+app.get('/api/modifier/:id', requireAuth, (req, res) => {
+  const row = stmts.codeReqGet.get(parseInt(req.params.id));
+  if (!row) return res.status(404).json({ error: 'Introuvable.' });
+  // Un membre peut voir ses propres demandes, un admin voit tout
+  if (row.requester_id !== req.session.user.id && !req.session.user.isAdmin) {
+    return res.status(403).json({ error: 'Accès refusé.' });
+  }
+  res.json(row);
+});
+
+// Approuver
+app.post('/api/modifier/:id/approve', requireAdmin, async (req, res) => {
+  try {
+    const result = await approveRequest(parseInt(req.params.id), req.session.user.nick);
+    if (result.actions?.length) storePendingActions(result.actions);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Refuser
+app.post('/api/modifier/:id/refuse', requireAdmin, (req, res) => {
+  try {
+    refuseRequest(parseInt(req.params.id), req.session.user.nick);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Polling statut (pour la webapp — le client poll toutes les 3s)
+app.get('/api/modifier/:id/status', requireAuth, (req, res) => {
+  const row = stmts.codeReqGet.get(parseInt(req.params.id));
+  if (!row) return res.status(404).json({ error: 'Introuvable.' });
+  if (row.requester_id !== req.session.user.id && !req.session.user.isAdmin) {
+    return res.status(403).json({ error: 'Accès refusé.' });
+  }
+  res.json({ status: row.status, diff_preview: row.diff_preview, error_msg: row.error_msg });
+});
+
 const serveIndex = (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html'));
 app.get('/', serveIndex);
 app.get('/{*splat}', serveIndex);
