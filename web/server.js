@@ -486,9 +486,10 @@ app.post('/api/stock', requireWrite, async (req, res) => {
   try {
     db.prepare('INSERT INTO stock (categorie, ressource, unite, prix_bronze, quantite, en_vente) VALUES (?,?,?,?,?,1)')
       .run(categorie, ressource, unite, prix_bronze, quantite ?? 0);
+    stmts.priceHistInsert.run(ressource, prix_bronze, req.session.user?.nick ?? '');
     await refreshStockEmbedREST();
     logActivity('stock_ajout', `${ressource} (${categorie}) · ${quantite ?? 0} ${unite} · ${prix_bronze}🟤`, req.session.user?.nick);
-    emit('stock:update', {});
+    emit('stock:update', {}); emit('prix:update', {});
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -503,6 +504,10 @@ app.put('/api/stock/:id', requireWrite, async (req, res) => {
   p.push(req.params.id);
   const stockRow = db.prepare('SELECT ressource FROM stock WHERE id=?').get(req.params.id);
   db.prepare(`UPDATE stock SET ${sets.join(',')} WHERE id=?`).run(...p);
+  if (prix_bronze !== undefined && stockRow?.ressource) {
+    stmts.priceHistInsert.run(stockRow.ressource, prix_bronze, req.session.user?.nick ?? '');
+    emit('prix:update', {});
+  }
   await refreshStockEmbedREST();
   const changes = sets.map((s, i) => `${s.replace('=?','')}=${p[i]}`).join(', ');
   logActivity('stock_maj', `${stockRow?.ressource ?? req.params.id} · ${changes}`, req.session.user?.nick);
@@ -517,6 +522,11 @@ app.delete('/api/stock/:id', requireWrite, async (req, res) => {
   logActivity('stock_suppression', stockRow?.ressource ?? req.params.id, req.session.user?.nick);
   emit('stock:update', {});
   res.json({ ok: true });
+});
+
+app.get('/api/stock/price-history/:ressource', requireAuth, (req, res) => {
+  const rows = stmts.priceHistByRes.all(decodeURIComponent(req.params.ressource));
+  res.json(rows.reverse());
 });
 
 // ── Prix ──────────────────────────────────────────────────────────────────────
@@ -1305,7 +1315,9 @@ app.post('/api/modifier', requireAuth, async (req, res) => {
     const requestId = createRequest(req.session.user.id, req.session.user.nick, description.trim());
 
     // Lance le traitement en arrière-plan
-    processRequest(requestId).catch(err => console.error('[code-agent] erreur traitement:', err));
+    processRequest(requestId)
+      .then(() => emit('modifier:update', {}))
+      .catch(err => { console.error('[code-agent] erreur traitement:', err); emit('modifier:update', {}); });
 
     res.json({ id: requestId, status: 'processing' });
   } catch (e) {
@@ -1336,6 +1348,7 @@ app.post('/api/modifier/:id/approve', requireAdmin, async (req, res) => {
   try {
     const result = await approveRequest(parseInt(req.params.id), req.session.user.nick);
     if (result.actions?.length) storePendingActions(result.actions);
+    emit('modifier:update', {});
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1346,6 +1359,7 @@ app.post('/api/modifier/:id/approve', requireAdmin, async (req, res) => {
 app.post('/api/modifier/:id/refuse', requireAdmin, (req, res) => {
   try {
     refuseRequest(parseInt(req.params.id), req.session.user.nick);
+    emit('modifier:update', {});
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1360,6 +1374,103 @@ app.get('/api/modifier/:id/status', requireAuth, (req, res) => {
     return res.status(403).json({ error: 'Accès refusé.' });
   }
   res.json({ status: row.status, diff_preview: row.diff_preview, error_msg: row.error_msg });
+});
+
+// ── Exports CSV ───────────────────────────────────────────────────────────────
+function toCSV(headers, rows) {
+  const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  return [headers.join(';'), ...rows.map(r => headers.map(h => esc(r[h])).join(';'))].join('\n');
+}
+
+app.get('/api/export/commandes.csv', requireAuth, (_req, res) => {
+  const rows = db.prepare("SELECT * FROM commandes ORDER BY creee_le DESC").all();
+  const headers = ['id','client_pseudo','ressource','quantite','unite','prix_total','statut','note','creee_le','traitee_le'];
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="commandes.csv"');
+  res.send('﻿' + toCSV(headers, rows));
+});
+
+app.get('/api/export/stock.csv', requireAuth, (_req, res) => {
+  const rows = stmts.stockAll.all();
+  const headers = ['id','categorie','ressource','quantite','unite','prix_bronze','en_vente','seuil_alerte'];
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="stock.csv"');
+  res.send('﻿' + toCSV(headers, rows));
+});
+
+app.get('/api/export/tresorerie.csv', requireAuth, (_req, res) => {
+  const rows = db.prepare("SELECT * FROM tresorerie_history ORDER BY creee_le DESC").all();
+  const headers = ['id','montant','solde_apres','motif','auteur','creee_le'];
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="tresorerie.csv"');
+  res.send('﻿' + toCSV(headers, rows));
+});
+
+app.get('/api/export/transactions.csv', requireAuth, (_req, res) => {
+  const rows = db.prepare("SELECT * FROM transactions ORDER BY date DESC").all();
+  const headers = ['id','type','ressource','quantite','prix_bronze','client_pseudo','date'];
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="transactions.csv"');
+  res.send('﻿' + toCSV(headers, rows));
+});
+
+// ── Analytics ────────────────────────────────────────────────────────────────
+app.get('/api/analytics', requireAuth, (_req, res) => {
+  // Rentabilité par ressource : revenus - coût estimé (prix_bronze stock * qte vendue)
+  const rentabilite = db.prepare(`
+    SELECT t.ressource,
+           COUNT(*) as nb_ventes,
+           SUM(t.quantite) as qte_vendue,
+           SUM(t.prix_bronze) as revenus,
+           s.prix_bronze as prix_achat_actuel
+    FROM transactions t
+    LEFT JOIN stock s ON LOWER(s.ressource) = LOWER(t.ressource)
+    WHERE t.type = 'vente' AND t.date >= datetime('now','-30 days')
+    GROUP BY LOWER(t.ressource)
+    ORDER BY revenus DESC
+    LIMIT 10
+  `).all();
+
+  // Vélocité des commandes : nb commandes livrées par ressource sur 30j
+  const velocite = db.prepare(`
+    SELECT ressource, COUNT(*) as nb, SUM(quantite) as qte_totale
+    FROM commandes WHERE statut='livree' AND traitee_le >= datetime('now','-30 days')
+    GROUP BY LOWER(ressource) ORDER BY nb DESC LIMIT 10
+  `).all();
+
+  // Prévisions rupture : stock actuel / vélocité moyenne quotidienne
+  const stockActuel = db.prepare("SELECT ressource, quantite, unite FROM stock WHERE quantite > 0").all();
+  const velociteMap = {};
+  for (const v of velocite) velociteMap[v.ressource.toLowerCase()] = v.qte_totale / 30;
+
+  const previsions = stockActuel
+    .map(s => {
+      const vel = velociteMap[s.ressource.toLowerCase()] ?? 0;
+      const joursRestants = vel > 0 ? Math.round(s.quantite / vel) : null;
+      return { ressource: s.ressource, quantite: s.quantite, unite: s.unite, vel_jour: Math.round(vel * 10) / 10, jours_restants: joursRestants };
+    })
+    .filter(s => s.jours_restants !== null && s.jours_restants <= 30)
+    .sort((a, b) => a.jours_restants - b.jours_restants)
+    .slice(0, 8);
+
+  // Chiffre d'affaires par segment
+  const parSegment = db.prepare(`
+    SELECT cs.segment, COUNT(*) as nb_clients, SUM(cs.total_bronze) as total
+    FROM client_stats cs GROUP BY cs.segment
+  `).all();
+
+  res.json({ rentabilite, velocite, previsions, parSegment });
+});
+
+// ── Calendrier ────────────────────────────────────────────────────────────────
+app.get('/api/calendrier', requireAuth, (_req, res) => {
+  const commandes = db.prepare(
+    "SELECT id, client_pseudo, ressource, quantite, unite, prix_total, statut, creee_le, traitee_le FROM commandes WHERE statut NOT IN ('livree','annulee') ORDER BY creee_le ASC"
+  ).all();
+  const contrats = db.prepare(
+    "SELECT id, vendeur_pseudo, acheteur_pseudo, ressource, quantite, unite, prix_total, statut, echeance_le, creee_le FROM contrats WHERE statut IN ('ouvert','accepte') ORDER BY echeance_le ASC"
+  ).all();
+  res.json({ commandes, contrats });
 });
 
 const serveIndex = (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html'));

@@ -226,6 +226,18 @@ function initSocket() {
     if (currentPage === 'offres') PAGES.offres?.render();
   });
 
+  _socket.on('contrats:update', () => {
+    if (currentPage === 'contrats' || currentPage === 'calendrier') PAGES[currentPage]?.render();
+  });
+
+  _socket.on('modifier:update', () => {
+    if (currentPage === 'modifier') loadModifierList();
+  });
+
+  _socket.on('prix:update', () => {
+    if (currentPage === 'prix') PAGES.prix?.render();
+  });
+
   _socket.on('connect', () => console.log('[WS] connecté'));
   _socket.on('disconnect', () => console.log('[WS] déconnecté'));
 }
@@ -250,7 +262,18 @@ const PAGES = {
   bourse:     { title: '💱 Bourse & Conversions',    render: renderBourse },
   contrats:   { title: '📜 Contrats',                render: renderContrats },
   modifier:   { title: '🛠️ Demandes de modification', render: renderModifier },
+  calendrier: { title: '📅 Calendrier', render: renderCalendrier },
 };
+
+function addExportBtn(filename) {
+  const btn = document.createElement('a');
+  btn.href = `/api/export/${filename}`;
+  btn.download = filename;
+  btn.className = 'btn';
+  btn.style.cssText = 'font-size:12px;padding:6px 12px;text-decoration:none';
+  btn.innerHTML = '⬇️ Export CSV';
+  $('topbar-actions').appendChild(btn);
+}
 
 let currentPage = 'dashboard';
 function navigate(page) {
@@ -367,6 +390,10 @@ async function renderDashboard() {
     <div class="table-toolbar"><h3>🕐 Dernières commandes</h3></div>
     ${recentTable(cmdRecentes)}
   </div>`}
+
+  <div id="dashboard-analytics" style="margin-top:8px">
+    <div class="empty" style="padding:24px"><div class="spinner"></div></div>
+  </div>
   `;
 
   // Graphique ventes J30
@@ -432,6 +459,60 @@ async function renderDashboard() {
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#8892a4', boxWidth: 14, font: { size: 11 } } } }, cutout: '55%' },
     });
   }
+
+  // Analytics section (chargée séparément pour ne pas bloquer le dashboard)
+  loadDashboardAnalytics();
+}
+
+async function loadDashboardAnalytics() {
+  const analyticsEl = $('dashboard-analytics');
+  if (!analyticsEl) return;
+  const a = await get('/api/analytics');
+  if (!a) return;
+
+  const urgColor = j => j <= 3 ? '#f87171' : j <= 7 ? '#fbbf24' : 'var(--green)';
+
+  const prevHTML = a.previsions.length ? a.previsions.map(p => `
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
+      <span style="flex:1;font-size:13px;font-weight:600">${escHtml(p.ressource)}</span>
+      <span style="font-size:12px;color:var(--text-dim)">${p.quantite} ${p.unite}</span>
+      <span style="font-size:12px;color:var(--text-dim)">${p.vel_jour}/j</span>
+      <span style="font-weight:700;font-size:12px;color:${urgColor(p.jours_restants)}">J−${p.jours_restants}</span>
+    </div>`).join('')
+    : '<div style="color:var(--text-dim);font-size:13px;padding:8px 0">Aucune rupture prévue à 30 jours.</div>';
+
+  const rentHTML = a.rentabilite.slice(0,5).map(r => `
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
+      <span style="flex:1;font-size:13px;font-weight:600">${escHtml(r.ressource)}</span>
+      <span style="font-size:12px;color:var(--text-dim)">${r.nb_ventes} vente(s)</span>
+      <span style="font-weight:700;font-size:13px;color:var(--gold)">${bronzeShort(r.revenus)}</span>
+    </div>`).join('') || '<div style="color:var(--text-dim);font-size:13px">Aucune vente ce mois.</div>';
+
+  analyticsEl.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px">
+      <div class="table-wrap" style="padding:20px">
+        <div style="font-weight:700;margin-bottom:12px;font-size:14px">⚠️ Prévisions de rupture (30j)</div>
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Ressource · Stock · Vélocité · Jours restants</div>
+        ${prevHTML}
+      </div>
+      <div class="table-wrap" style="padding:20px">
+        <div style="font-weight:700;margin-bottom:12px;font-size:14px">🏆 Top ressources (revenus 30j)</div>
+        ${rentHTML}
+        ${a.rentabilite.length ? `<canvas id="c-renta" height="120" style="margin-top:12px"></canvas>` : ''}
+      </div>
+    </div>`;
+
+  if (a.rentabilite.length) {
+    mkChart('c-renta', {
+      type: 'bar',
+      data: {
+        labels: a.rentabilite.slice(0,5).map(r => r.ressource.slice(0,12)),
+        datasets: [{ label: 'Revenus 🟤', data: a.rentabilite.slice(0,5).map(r => r.revenus),
+          backgroundColor: chartColors(5), borderRadius: 6, borderWidth: 0 }],
+      },
+      options: { responsive: true, plugins: { legend: { display: false } }, scales: CHART_DEFAULTS.scales },
+    });
+  }
 }
 
 function kpi(label, value, sub, color = 'var(--gold)') {
@@ -466,7 +547,9 @@ function catColor(cat) {
 }
 
 async function renderStock() {
-  $('topbar-actions').innerHTML = `<button class="btn btn-primary" onclick="openAddStock()">+ Ajouter</button>`;
+  $('topbar-actions').innerHTML = `
+    <a class="btn" style="font-size:12px;padding:6px 12px;text-decoration:none" href="/api/export/stock.csv" download>⬇️ Export CSV</a>
+    <button class="btn btn-primary" onclick="openAddStock()">+ Ajouter</button>`;
   await loadStock();
 }
 
@@ -502,6 +585,8 @@ async function loadStock() {
           onblur="saveStockField(this)" onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault()}"
         >${r.prix_bronze}</span><span style="color:var(--text-dim)">🟤 / ${r.unite}</span>
         <span style="color:var(--text-dim);font-size:11px">(${bronze(r.prix_bronze)})</span>
+        <button class="btn btn-sm" style="margin-left:auto;padding:3px 7px;font-size:11px;opacity:.7" title="Historique des prix"
+          onclick="showPriceHistory('${esc(r.ressource)}',this)">📈</button>
       </div>
       <button class="vente-pill ${r.en_vente?'on':'off'}" id="vp-${r.id}"
         onclick="toggleVente(${r.id},${r.en_vente?0:1},this)"
@@ -546,6 +631,41 @@ async function loadStock() {
     </div>
     <div style="color:var(--text-dim);font-size:12px;margin:10px 0 14px">${d.rows.length} article${d.rows.length>1?'s':''} — cliquez sur la quantité ou le prix pour modifier</div>
     <div class="stock-grid">${cards}</div>`;
+}
+
+let _priceHistPopup = null;
+async function showPriceHistory(ressource, btn) {
+  if (_priceHistPopup) { _priceHistPopup.remove(); _priceHistPopup = null; if (_priceHistPopup?.dataset?.res === ressource) return; }
+  const data = await get(`/api/stock/price-history/${encodeURIComponent(ressource)}`);
+  if (!data?.length) { toast('Aucun historique de prix disponible.'); return; }
+
+  const popup = document.createElement('div');
+  popup.dataset.res = ressource;
+  popup.style.cssText = 'position:fixed;z-index:9999;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;width:420px;max-width:95vw;backdrop-filter:blur(24px);box-shadow:0 8px 40px rgba(0,0,0,.5)';
+  popup.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <span style="font-weight:700;font-size:15px">📈 Historique — ${ressource}</span>
+      <button onclick="this.closest('div[style]').remove()" style="background:none;border:none;color:var(--text-dim);font-size:18px;cursor:pointer">✕</button>
+    </div>
+    <canvas id="price-hist-chart" height="160"></canvas>
+    <div style="font-size:11px;color:var(--text-dim);margin-top:8px;text-align:center">${data.length} entrée(s) — ${data[0].created_at?.slice(0,10)} → ${data.at(-1).created_at?.slice(0,10)}</div>`;
+  document.body.appendChild(popup);
+  _priceHistPopup = popup;
+
+  mkChart('price-hist-chart', {
+    type: 'line',
+    data: {
+      labels: data.map(r => r.created_at?.slice(5,10)),
+      datasets: [{ label: 'Prix 🟤', data: data.map(r => r.prix_bronze),
+        borderColor: 'var(--accent)', backgroundColor: 'rgba(226,184,74,.12)',
+        fill: true, tension: 0.3, pointRadius: 3 }],
+    },
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: false } } },
+  });
+
+  document.addEventListener('click', function closePopup(e) {
+    if (!popup.contains(e.target) && e.target !== btn) { popup.remove(); _priceHistPopup = null; document.removeEventListener('click', closePopup); }
+  }, { capture: true, once: false });
 }
 
 function openStockApprovisionnement(id, nom, qteActuelle, unite) {
@@ -762,7 +882,7 @@ const CMD_LIMIT = 50;
 
 async function renderCommandes(){
   $('topbar-actions').innerHTML = `
-    <a class="btn btn-ghost btn-sm" href="/api/commandes/export.csv" download>⬇ Export CSV</a>
+    <a class="btn" style="font-size:12px;padding:6px 12px;text-decoration:none" href="/api/export/commandes.csv" download>⬇️ Export CSV</a>
     <button class="btn btn-primary" onclick="openNewCommande()">+ Nouvelle commande</button>`;
   cmdPage = 1;
   await loadCommandes();
@@ -1047,7 +1167,7 @@ async function setOffre(id, statut) {
 
 // ── TRÉSORERIE ────────────────────────────────────────────────────────────────
 async function renderTresorerie() {
-  $('topbar-actions').innerHTML = '';
+  $('topbar-actions').innerHTML = `<a class="btn" style="font-size:12px;padding:6px 12px;text-decoration:none" href="/api/export/tresorerie.csv" download>⬇️ Export CSV</a>`;
   const [tresorData, history] = await Promise.all([get('/api/tresor'), get('/api/tresorerie/history')]);
   if (!tresorData) return;
 
@@ -3047,3 +3167,97 @@ async function refuseModifier(id) {
 }
 
 document.addEventListener('keydown', e => { if (e.key === 'Escape') wikiModalClose(); });
+
+// ── CALENDRIER ────────────────────────────────────────────────────────────────
+async function renderCalendrier() {
+  $('page-content').innerHTML = '<div class="empty"><div class="spinner"></div></div>';
+  const d = await get('/api/calendrier');
+  if (!d) return;
+
+  const today = new Date();
+  today.setHours(0,0,0,0);
+
+  function daysFromNow(dateStr) {
+    if (!dateStr) return null;
+    const d = new Date(dateStr.replace(' ','T'));
+    d.setHours(0,0,0,0);
+    return Math.round((d - today) / 86400000);
+  }
+
+  function urgencyColor(days) {
+    if (days === null) return 'var(--text-dim)';
+    if (days < 0)  return '#f87171';
+    if (days <= 1) return '#fb923c';
+    if (days <= 3) return '#fbbf24';
+    return 'var(--green)';
+  }
+
+  function daysLabel(days) {
+    if (days === null) return '';
+    if (days < 0)  return `<span style="color:#f87171">En retard (${Math.abs(days)}j)</span>`;
+    if (days === 0) return `<span style="color:#fb923c">Aujourd'hui</span>`;
+    if (days === 1) return `<span style="color:#fbbf24">Demain</span>`;
+    return `<span style="color:var(--green)">Dans ${days}j</span>`;
+  }
+
+  const statutCmd = { en_attente:'⏳ En attente', en_cours:'⚒️ En cours', prete:'📦 Prête' };
+
+  // Tri par urgence
+  const cmds = [...d.commandes].sort((a, b) => {
+    const da = daysFromNow(a.creee_le) ?? 999;
+    const db2 = daysFromNow(b.creee_le) ?? 999;
+    return da - db2;
+  });
+  const contrats = [...d.contrats].sort((a, b) => {
+    const da = daysFromNow(a.echeance_le) ?? 999;
+    const db2 = daysFromNow(b.echeance_le) ?? 999;
+    return da - db2;
+  });
+
+  const cmdRows = cmds.length ? cmds.map(c => {
+    const age = daysFromNow(c.creee_le);
+    return `
+    <div class="cal-row" style="border-left:3px solid ${urgencyColor(age)}">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span class="badge badge-cours" style="font-size:11px">${statutCmd[c.statut] ?? c.statut}</span>
+        <span style="font-weight:600">#${String(c.id).padStart(4,'0')} — ${escHtml(c.client_pseudo)}</span>
+        <span style="color:var(--text-dim);font-size:12px;margin-left:auto">${daysLabel(age)}</span>
+      </div>
+      <div style="font-size:13px;margin-top:4px;color:var(--text-dim)">${escHtml(c.ressource)} ×${c.quantite} ${c.unite} — ${bronzeShort(c.prix_total)}</div>
+      <div style="font-size:11px;color:var(--text-dim)">${c.creee_le?.slice(0,16).replace('T',' ')}</div>
+    </div>`;
+  }).join('') : '<div style="color:var(--text-dim);padding:16px">Aucune commande active.</div>';
+
+  const contratRows = contrats.length ? contrats.map(c => {
+    const days = daysFromNow(c.echeance_le);
+    return `
+    <div class="cal-row" style="border-left:3px solid ${urgencyColor(days)}">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span class="badge badge-prete" style="font-size:11px">📜 ${c.statut}</span>
+        <span style="font-weight:600">#${c.id} — ${escHtml(c.ressource)}</span>
+        <span style="color:var(--text-dim);font-size:12px;margin-left:auto">${daysLabel(days)}</span>
+      </div>
+      <div style="font-size:13px;margin-top:4px;color:var(--text-dim)">
+        ${c.vendeur_pseudo ? `Vendeur : ${escHtml(c.vendeur_pseudo)}` : ''}
+        ${c.acheteur_pseudo ? ` · Acheteur : ${escHtml(c.acheteur_pseudo)}` : ''}
+        · ×${c.quantite} ${c.unite} — ${bronzeShort(c.prix_total)}
+      </div>
+      <div style="font-size:11px;color:var(--text-dim)">Échéance : ${c.echeance_le?.slice(0,10)}</div>
+    </div>`;
+  }).join('') : '<div style="color:var(--text-dim);padding:16px">Aucun contrat actif.</div>';
+
+  $('page-content').innerHTML = `
+  <style>
+    .cal-row { padding:14px 16px; margin-bottom:8px; background:var(--glass); border-radius:10px; backdrop-filter:blur(8px); }
+  </style>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:24px;max-width:1200px">
+    <div class="card">
+      <div class="card-title">🛒 Commandes actives <span style="font-size:12px;font-weight:400;color:var(--text-dim)">(${cmds.length})</span></div>
+      ${cmdRows}
+    </div>
+    <div class="card">
+      <div class="card-title">📜 Contrats en cours <span style="font-size:12px;font-weight:400;color:var(--text-dim)">(${contrats.length})</span></div>
+      ${contratRows}
+    </div>
+  </div>`;
+}

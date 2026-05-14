@@ -251,6 +251,17 @@ db.exec(`
 `);
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS price_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ressource   TEXT NOT NULL,
+    prix_bronze INTEGER NOT NULL,
+    auteur      TEXT DEFAULT '',
+    created_at  TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_price_history_res ON price_history(ressource, created_at DESC);
+`);
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS action_queue (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     actions    TEXT NOT NULL,
@@ -386,6 +397,11 @@ export const stmts = {
   actionQueueInsert: db.prepare("INSERT INTO action_queue (actions) VALUES (?)"),
   actionQueueAll:    db.prepare("SELECT * FROM action_queue ORDER BY id ASC"),
   actionQueueDelete: db.prepare("DELETE FROM action_queue WHERE id=?"),
+
+  // Price history
+  priceHistInsert:  db.prepare("INSERT INTO price_history (ressource,prix_bronze,auteur) VALUES (?,?,?)"),
+  priceHistByRes:   db.prepare("SELECT * FROM price_history WHERE ressource=? ORDER BY created_at DESC LIMIT 90"),
+  priceHistRecent:  db.prepare("SELECT ressource, prix_bronze, created_at FROM price_history ORDER BY created_at DESC LIMIT 500"),
 
   // Sessions
   sessionGet:     db.prepare("SELECT data FROM sessions WHERE sid=? AND expires_at>?"),

@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>La Compagnie du Fjord — Intendance</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#C9A84C">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Compagnie du Fjord">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -1048,6 +1054,11 @@ th.sortable:hover .sort-arrow,th.sort-active .sort-arrow{opacity:1}
   .empty{padding:36px 16px}
 }
 </style>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+}
+</script>
 </head>
 <body>
 
@@ -1133,6 +1144,7 @@ th.sortable:hover .sort-arrow,th.sort-active .sort-arrow{opacity:1}
       <div class="nav-item" data-page="ia"><span class="icon">🤖</span>Config IA</div>
       <div class="nav-item" data-page="wiki"><span class="icon">📚</span>Wiki & Commandes</div>
       <div class="nav-item" data-page="modifier"><span class="icon">🛠️</span>Demandes IA</div>
+      <div class="nav-item" data-page="calendrier"><span class="icon">📅</span>Calendrier</div>
 
       <div class="nav-section">Administration</div>
       <div class="nav-item" data-page="permissions"><span class="icon">🛡️</span>Permissions</div>
