@@ -3,6 +3,7 @@ import db, { stmts } from '../db/database.js';
 import { bronzeVersTexte, prixAvecVariation } from '../utils/monnaie.js';
 import { embedBase, embedErreur, embedSucces, COULEURS } from '../utils/embeds.js';
 import { alerteNouvelleCommande, calcSegment, segmentEmoji } from '../utils/alertes.js';
+import { commentaireNouvelleCommande } from '../utils/ia-proactive.js';
 
 export const data = new SlashCommandBuilder()
   .setName('commander')
@@ -71,7 +72,10 @@ export async function execute(interaction) {
 
   // Alerte intelligence économique (VIP / grosse commande)
   const commande = db.prepare('SELECT * FROM commandes WHERE id=?').get(id);
-  if (commande) alerteNouvelleCommande(interaction.client, commande).catch(() => {});
+  if (commande) {
+    alerteNouvelleCommande(interaction.client, commande).catch(() => {});
+    commentaireNouvelleCommande(interaction.client, commande).catch(() => {});
+  }
 
   // Notifier le canal marchand si configuré
   const logChannel = interaction.guild?.channels?.cache?.find(c => c.name === 'commandes-fjord');

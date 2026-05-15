@@ -6,6 +6,7 @@ import { embedBase, embedErreur, embedSucces, COULEURS } from '../utils/embeds.j
 import { paginationButtons, paginate, PAGE_SIZE } from '../utils/pagination.js';
 import { refreshStockEmbed } from '../utils/setup.js';
 import { getForumCommandesId, getBuyerPostId, setBuyerPostId, removeBuyerPost, isBuyerDone } from '../utils/forum.js';
+import { commentaireNouvelleCommande } from '../utils/ia-proactive.js';
 
 const STATUTS = [
   { value: 'actives',    label: '🔄 En cours',    desc: 'En attente + En cours + Prêtes' },
@@ -244,6 +245,8 @@ export async function execute(interaction) {
     );
     if (threadId) embed.addFields({ name: '🎫 Ticket', value: `<#${threadId}>`, inline: false });
     if (note) embed.addFields({ name: '📝 Note', value: note, inline: false });
+
+    commentaireNouvelleCommande(interaction.client, commande).catch(() => {});
 
     return interaction.editReply({ embeds: [embed] });
   }

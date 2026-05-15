@@ -40,6 +40,7 @@ function syncMemberPerms(member) {
   } catch {}
 }
 import { enqueue, askNvidia, getQueueSize, splitResponse, buildSystemPrompt, buildVisitorPrompt, getHistory, addToHistory, updatePlayerProfile } from './utils/ia.js';
+import { postWeeklySummary, alerteStockEnrichie, accueilNouveauMembre, relanceCommandesEnAttente, commentaireNouvelleCommande, commentaireNouvelleOffre } from './utils/ia-proactive.js';
 import { startMonitoring, alerteNouvelleCommande, calcSegment, segmentEmoji } from './utils/alertes.js';
 import { moderateMessage, handleModerationAppeal, loadWhitelist, loadLibrary, seedModerationWords, registerIAChannels } from './utils/moderation.js';
 import { getForumOffresId, getSellerPostId, setSellerPostId, removeSellerPost, isSellerDone } from './utils/forum.js';
@@ -261,6 +262,7 @@ client.on('guildMemberAdd', async member => {
     const role = member.guild.roles.cache.get(ROLE_VISITEUR);
     if (role) await member.roles.add(role);
   } catch (e) { console.error('[guildMemberAdd]', e); }
+  accueilNouveauMembre(client, member).catch(e => console.error('[accueil]', e));
 });
 
 // ── Handler modal ticket visiteur ─────────────────────────────────────────────
@@ -422,6 +424,8 @@ async function handleVenteModal(interaction) {
       threadId = postId;
     } catch (e) { console.error('[forum vente_modal]', e); }
   }
+
+  commentaireNouvelleOffre(client, offre).catch(() => {});
 
   return interaction.editReply({ embeds: [embedSucces(
     `Votre offre **#${num}** a été transmise !\n**${ressource}** × ${quantite}` +
@@ -823,12 +827,29 @@ async function postMorningBriefing(client) {
 
 setInterval(() => {
   const now = new Date();
-  if (now.getHours() !== 8 || now.getMinutes() !== 0) return;
+  const h = now.getHours(), m = now.getMinutes();
   const today = now.toISOString().slice(0, 10);
-  if (cfgGet('LAST_BRIEFING_DATE') === today) return;
-  cfgSet('LAST_BRIEFING_DATE', today);
-  postMorningBriefing(client).catch(e => console.error('[briefing]', e));
+
+  // Briefing matin 8h00
+  if (h === 8 && m === 0) {
+    if (cfgGet('LAST_BRIEFING_DATE') !== today) {
+      cfgSet('LAST_BRIEFING_DATE', today);
+      postMorningBriefing(client).catch(e => console.error('[briefing]', e));
+    }
+  }
+
+  // Résumé hebdo lundi 9h00
+  if (now.getDay() === 1 && h === 9 && m === 0) {
+    if (cfgGet('LAST_WEEKLY_SUMMARY') !== today) {
+      postWeeklySummary(client).catch(e => console.error('[weekly]', e));
+    }
+  }
 }, 60_000);
+
+// Relance commandes +48h — toutes les heures
+setInterval(() => {
+  relanceCommandesEnAttente(client).catch(e => console.error('[relance-cmds]', e));
+}, 60 * 60_000);
 
 // ── Nettoyage automatique du salon aide (toutes les 15 min) ──────────────────
 const AIDE_CHANNEL_ID = '1503070770983604244';
