@@ -838,10 +838,10 @@ setInterval(() => {
     }
   }
 
-  // Résumé hebdo lundi 9h00
-  if (now.getDay() === 1 && h === 9 && m === 0) {
+  // Résumé quotidien 16h00
+  if (h === 16 && m === 0) {
     if (cfgGet('LAST_WEEKLY_SUMMARY') !== today) {
-      postWeeklySummary(client).catch(e => console.error('[weekly]', e));
+      postWeeklySummary(client).catch(e => console.error('[daily-summary]', e));
     }
   }
 }, 60_000);

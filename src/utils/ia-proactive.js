@@ -76,7 +76,7 @@ export async function postWeeklySummary(client) {
   const tresor = parseInt(cfgGet('TRESOR_BRONZE') ?? '0');
 
   const resumeBrut = [
-    `Semaine écoulée : ${commandesSemaine.nb} commandes livrées pour ${commandesSemaine.total ?? 0} bronze au total.`,
+    `Ces 7 derniers jours : ${commandesSemaine.nb} commandes livrées pour ${commandesSemaine.total ?? 0} bronze au total.`,
     topProduit ? `Produit le plus demandé : ${topProduit.ressource} (${topProduit.nb} fois).` : '',
     `${offresSemaine.nb} offres de vente acceptées.`,
     `Trésorerie actuelle : ${bronzeVersTexte(tresor)}.`,
@@ -102,7 +102,7 @@ export async function postWeeklySummary(client) {
   );
 
   const embedBase = (titre, narration, color) => new EmbedBuilder()
-    .setTitle(`📜 Chronique de la semaine — ${date}`)
+    .setTitle(`📜 Chronique du jour — ${date}`)
     .setDescription(narration ?? resumeBrut)
     .setColor(color)
     .setFooter({ text: titre })
