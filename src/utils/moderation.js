@@ -9,20 +9,23 @@ const NVIDIA_API_KEY = 'nvapi-RNhQgoSd6jPfODXEL0MhVBzj9gnJMjWK5EdzV3WYQhEmhd0xj3
 const BASE_URL       = 'https://integrate.api.nvidia.com/v1';
 const MODEL_8B       = 'meta/llama-3.1-8b-instruct';
 
-// ── Pré-filtre — termes qui déclenchent une évaluation IA ─────────────────────
-// Seulement les cas graves — le langage de jeu familier passe librement
-const TRIGGERS = [
-  // Insultes directes graves FR
-  'va te faire', 'va te foutre', 'ferme ta gueule', 'ta gueule',
-  'fils de pute', 'fils de p', 'fdp', 'nique ta mère', 'ntm', 'nique ta mere',
-  'je vais te', 'je vais vous',
-  // Slurs FR
-  'pd ', ' pd', 'pédale', 'tapette', 'enculé', 'enculer',
-  'salope', 'grosse pute', 'grande pute',
-  // Harcèlement / menaces
-  'tu vas mourir', 'je vais te tuer', 'je te tuer', 'suicide toi', 'va crever',
+// ── Pré-filtre rapide — skip les messages clairement anodins ──────────────────
+// Mots qui, seuls dans un message très court, sont anodins (exclamations de jeu)
+const SAFE_ALONE = new Set(['ok', 'oui', 'non', 'lol', 'haha', 'xd', 'gg', 'np', 'yes', 'no', 'thx', 'merci', '👍', '❤️']);
+
+// Mots porteurs de potentiel offensant — si présents, on appelle l'IA
+const SUSPECTS = [
+  // Insultes courantes FR
+  'sale', 'merde', 'connard', 'connasse', 'con', 'conne', 'crétin', 'idiote', 'idiot',
+  'abruti', 'débile', 'imbécile', 'nul', 'nulle', 'bouffon', 'guignol', 'clown',
+  'gueule', 'pute', 'salope', 'enculé', 'pd', 'pédale', 'tapette',
+  'fdp', 'ntm', 'va te', 'fils de', 'nique', 'bâtard', 'batard',
+  'ta mère', 'ta mere', 'race', 'raciste', 'nazi',
+  // Menaces
+  'je vais te', 'je vais vous', 'tu vas', 'va crever', 'crève',
+  'suicide', 'tue toi', 'kill yourself', 'kys',
   // Slurs EN
-  'nigger', 'nigga', 'faggot', ' kys', 'kill yourself',
+  'nigger', 'nigga', 'faggot', 'bitch', 'cunt',
 ];
 
 // ── Whitelist en mémoire ───────────────────────────────────────────────────────
@@ -44,10 +47,20 @@ function isWhitelisted(content) {
   return false;
 }
 
-function hasHardTrigger(content) {
-  const lower = content.toLowerCase();
-  return TRIGGERS.some(t => lower.includes(t));
+function shouldCheckWithAI(content) {
+  const lower = content.toLowerCase().trim();
+  const words = lower.split(/\s+/);
+
+  // Message très court composé uniquement de mots anodins → skip
+  if (words.length <= 2 && words.every(w => SAFE_ALONE.has(w))) return false;
+
+  // Si au moins un mot suspect est présent → check IA
+  return SUSPECTS.some(s => lower.includes(s));
 }
+
+// Rate-limiter léger : évite de spammer l'API sur un flood de messages
+const _lastCheck = new Map(); // userId → timestamp
+const RATELIMIT_MS = 3000; // 3s entre deux checks du même user
 
 // ── Appel NVIDIA llama-3.1-8b ─────────────────────────────────────────────────
 async function askLlama8b(systemPrompt, userPrompt) {
@@ -156,8 +169,13 @@ export async function moderateMessage(message) {
   // Skip si whitelisté
   if (isWhitelisted(content)) return;
 
-  // Pré-filtre rapide
-  if (!hasHardTrigger(content)) return;
+  // Filtre intelligent — si aucun mot suspect détecté → pas d'appel IA
+  if (!shouldCheckWithAI(content)) return;
+
+  // Rate-limit par user (évite flood)
+  const lastTs = _lastCheck.get(message.author.id) ?? 0;
+  if (Date.now() - lastTs < RATELIMIT_MS) return;
+  _lastCheck.set(message.author.id, Date.now());
 
   _inProgress.add(message.id);
   try {
