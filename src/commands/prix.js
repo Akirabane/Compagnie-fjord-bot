@@ -1,15 +1,14 @@
-import { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } from 'discord.js';
 import db from '../db/database.js';
 import { isMarchand, refus } from '../utils/auth.js';
 import { embedBase, embedErreur, embedSucces, COULEURS } from '../utils/embeds.js';
-import { paginationButtons, categoryMenu, paginate, PAGE_SIZE } from '../utils/pagination.js';
 
 const REGIONS = [
-  { col: 'prix_pdm',    label: '⚓ PdM'   },
-  { col: 'prix_rheme',  label: '🛡️ Rhême' },
-  { col: 'prix_skanor', label: '⚔️ Skanor' },
-  { col: 'prix_byb',    label: '🏜️ Byb'   },
-  { col: 'prix_yuhang', label: '🌾 Yuhang' },
+  { col: 'prix_pdm',    label: '⚓ Peuple de la Mer', couleur: 0x1A3A5C },
+  { col: 'prix_rheme',  label: '🛡️ Rhême',            couleur: 0x8B1A1A },
+  { col: 'prix_skanor', label: '⚔️ Skanor',            couleur: 0xC9A84C },
+  { col: 'prix_byb',    label: '🏜️ Byb-Razad',         couleur: 0xD2691E },
+  { col: 'prix_yuhang', label: '🌾 Yuhang',             couleur: 0x2D6A2D },
 ];
 
 const CATS = ['🌾 Agriculture', '🐄 Élevage & Chasse', '⛏️ Minerais', '🪵 Construction', '⚔️ Forge & Armement'];
@@ -25,58 +24,73 @@ function calcPrix(val, unite_base, estTonne) {
   return val;
 }
 
-function buildPrixEmbed(categorie, page, estTonne) {
-  const all   = getPrixData(categorie);
-  if (all.length === 0) return { embed: null, components: [] };
-
-  const items   = paginate(all, page);
-  const maxPage = Math.ceil(all.length / PAGE_SIZE);
-  const unite   = estTonne ? '1 Tonne (×64)' : '1 Unité';
-
-  const embed = embedBase(
-    `📊 Prix en temps réel — ${categorie}`,
-    `*Page ${page + 1}/${maxPage} · Unité : **${unite}** · 🔵 Achat idéal · 🔴 Vente idéale*`,
-    COULEURS.or
+function regionMenu(selected = null) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('prix_region')
+      .setPlaceholder(selected ? `Région : ${REGIONS.find(r => r.col === selected)?.label}` : '📍 Choisir une région…')
+      .addOptions(REGIONS.map(r => ({ label: r.label, value: r.col, default: r.col === selected })))
   );
+}
 
-  for (const row of items) {
-    const vals = REGIONS.map(r => calcPrix(row[r.col], row.unite_base, estTonne));
-    const known = vals.filter(v => v !== null);
-    const min   = known.length ? Math.min(...known) : null;
-    const max   = known.length ? Math.max(...known) : null;
+function catMenu(regionCol, selected = null) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`prix_cat:${regionCol}`)
+      .setPlaceholder(selected ? `Catégorie : ${selected}` : '📦 Choisir une catégorie…')
+      .addOptions(CATS.map(c => ({ label: c, value: c, default: c === selected })))
+  );
+}
 
-    const lines = REGIONS.map((r, i) => {
-      const v = vals[i];
-      if (v === null) return `${r.label}: *inconnu*`;
-      let tag = `**${v}🟤**`;
-      if (v === min && min !== max) tag += ' 🔵';
-      else if (v === max && min !== max) tag += ' 🔴';
-      return `${r.label}: ${tag}`;
-    });
+function buildPrixEmbed(regionCol, categorie, estTonne) {
+  const region = REGIONS.find(r => r.col === regionCol);
+  if (!region) return null;
+  const all = getPrixData(categorie);
+  if (!all.length) return null;
 
-    embed.addFields({
-      name: `${row.produit} *(${row.unite_base})*`,
-      value: lines.join('\n'),
-      inline: true,
-    });
+  const unite = estTonne ? '1 Tonne (×64)' : '1 Unité';
+
+  // min/max toutes régions pour comparaison
+  const stats = {};
+  for (const row of all) {
+    const vals = REGIONS.map(r => calcPrix(row[r.col], row.unite_base, estTonne)).filter(v => v !== null);
+    stats[row.produit] = { min: vals.length ? Math.min(...vals) : null, max: vals.length ? Math.max(...vals) : null };
   }
 
-  const rem = items.length % 3;
+  const embed = embedBase(
+    `${region.label} — ${categorie}`,
+    `*Unité : **${unite}** · 🔵 Prix le plus bas toutes régions · 🔴 Prix le plus haut*`,
+    region.couleur
+  );
+
+  for (const row of all) {
+    const v = calcPrix(row[regionCol], row.unite_base, estTonne);
+    const { min, max } = stats[row.produit];
+    let display = v === null ? '*inconnu*' : `**${v}🟤**`;
+    if (v !== null && min !== null && max !== null && min !== max) {
+      if (v === min) display += ' 🔵';
+      else if (v === max) display += ' 🔴';
+    }
+    embed.addFields({ name: `${row.produit} *(${row.unite_base})*`, value: display, inline: true });
+  }
+
+  const rem = all.length % 3;
   if (rem === 1) embed.addFields({ name: '​', value: '​', inline: true }, { name: '​', value: '​', inline: true });
   if (rem === 2) embed.addFields({ name: '​', value: '​', inline: true });
 
-  const tok    = estTonne ? 'T' : 'U';
-  const baseId = `prix:${categorie}:${tok}`;
+  return embed;
+}
 
+function buildPrixComponents(regionCol, categorie, estTonne) {
   const toggleBtn = new ButtonBuilder()
-    .setCustomId(`prix_toggle:${categorie}:${page}:${estTonne ? 'U' : 'T'}`)
+    .setCustomId(`prix_toggle:${regionCol}:${categorie}:${estTonne ? 'U' : 'T'}`)
     .setLabel(estTonne ? '🔄 Afficher par Unité' : '🔄 Afficher par Tonne (×64)')
     .setStyle(ButtonStyle.Secondary);
-
-  const menuRow  = categoryMenu('prix_select', CATS, `Catégorie : ${categorie}`);
-  const pageRows = paginationButtons(baseId, page, all.length, [toggleBtn]);
-
-  return { embed, components: [menuRow, ...pageRows] };
+  return [
+    regionMenu(regionCol),
+    catMenu(regionCol, categorie),
+    new ActionRowBuilder().addComponents(toggleBtn),
+  ];
 }
 
 // ── Commande slash ──────────────────────────────────────────────────────────
@@ -137,13 +151,12 @@ export async function execute(interaction) {
   const sub = interaction.options.getSubcommand();
 
   if (sub === 'voir') {
-    const menuRow = categoryMenu('prix_select', CATS);
-    const embed   = embedBase(
-      '📊 Prix en temps réel',
-      '*Sélectionnez une catégorie pour comparer les prix entre toutes les régions de Vyldra.*',
+    const embed = embedBase(
+      '📊 Prix en temps réel — Par région',
+      '*Commencez par choisir une région, puis une catégorie de produits.*\n*🔵 Prix le plus bas · 🔴 Prix le plus haut*',
       COULEURS.or
     );
-    return interaction.reply({ embeds: [embed], components: [menuRow] });
+    return interaction.reply({ embeds: [embed], components: [regionMenu()] });
   }
 
   if (sub === 'modifier') {
@@ -207,22 +220,35 @@ export async function execute(interaction) {
 }
 
 // ── Gestionnaires sélect + boutons ──────────────────────────────────────────
-export async function handleSelect(interaction) {
-  const { embed, components } = buildPrixEmbed(interaction.values[0], 0, false);
-  if (!embed) return interaction.update({ embeds: [embedErreur('Aucun produit.')], components: [] });
-  await interaction.update({ embeds: [embed], components });
+
+// Sélection région → affiche menu catégorie
+export async function handleRegionSelect(interaction) {
+  const regionCol = interaction.values[0];
+  const embed = embedBase(
+    `${REGIONS.find(r => r.col === regionCol)?.label} — Choisissez une catégorie`,
+    '*Sélectionnez une catégorie de produits pour afficher les prix.*',
+    REGIONS.find(r => r.col === regionCol)?.couleur ?? COULEURS.or
+  );
+  await interaction.update({ embeds: [embed], components: [regionMenu(regionCol), catMenu(regionCol)] });
 }
 
-export async function handlePage(interaction, categorie, page, tok) {
-  const estTonne = tok === 'T';
-  const { embed, components } = buildPrixEmbed(categorie, page, estTonne);
-  if (!embed) return interaction.update({ embeds: [embedErreur('Erreur.')], components: [] });
-  await interaction.update({ embeds: [embed], components });
+// Sélection catégorie (customId: prix_cat:<regionCol>)
+export async function handleCatSelect(interaction) {
+  const regionCol = interaction.customId.split(':')[1];
+  const categorie = interaction.values[0];
+  const embed = buildPrixEmbed(regionCol, categorie, false);
+  if (!embed) return interaction.update({ embeds: [embedErreur('Aucun produit dans cette catégorie.')], components: [] });
+  await interaction.update({ embeds: [embed], components: buildPrixComponents(regionCol, categorie, false) });
 }
 
-export async function handleToggle(interaction, categorie, page, tok) {
+// Toggle unité/tonne (customId: prix_toggle:<regionCol>:<categorie>:<tok>)
+export async function handleToggle(interaction, regionCol, categorie, tok) {
   const estTonne = tok === 'T';
-  const { embed, components } = buildPrixEmbed(categorie, page, estTonne);
+  const embed = buildPrixEmbed(regionCol, categorie, estTonne);
   if (!embed) return interaction.update({ embeds: [embedErreur('Erreur.')], components: [] });
-  await interaction.update({ embeds: [embed], components });
+  await interaction.update({ embeds: [embed], components: buildPrixComponents(regionCol, categorie, estTonne) });
 }
+
+// Conservé pour compatibilité ascendante
+export async function handleSelect(interaction) { return handleRegionSelect(interaction); }
+export async function handlePage(interaction, cat, page, tok) { return handleToggle(interaction, cat, page, tok); }

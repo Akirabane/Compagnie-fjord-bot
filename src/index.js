@@ -5,7 +5,7 @@ import path from 'path';
 import { readdirSync } from 'fs';
 
 import { handleSelect as catSelect, handlePage as catPage }                                        from './commands/catalogue.js';
-import { handleSelect as prixSelect, handlePage as prixPage, handleToggle as prixToggle }          from './commands/prix.js';
+import { handleRegionSelect as prixRegionSelect, handleCatSelect as prixCatSelect, handleToggle as prixToggle }          from './commands/prix.js';
 import { handleFiltreSelect as cmdFiltre, handlePage as cmdPage, handleStatutBtn as cmdStatut }    from './commands/commandes.js';
 import { handleCatSelect as stockCat, handlePage as stockPage }                                    from './commands/stock.js';
 import { handleProfSelect as recProf, handleNivSelect as recNiv, handlePage as recPage, handleDetail as recDetail } from './commands/recette.js';
@@ -606,7 +606,8 @@ client.on('interactionCreate', async interaction => {
     // ── Select menus ──────────────────────────────────────────────────────────
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === 'cat_select')               return await catSelect(interaction);
-      if (interaction.customId === 'prix_select')              return await prixSelect(interaction);
+      if (interaction.customId === 'prix_region')               return await prixRegionSelect(interaction);
+      if (interaction.customId.startsWith('prix_cat:'))        return await prixCatSelect(interaction);
       if (interaction.customId === 'cmd_filtre')               return await cmdFiltre(interaction);
       if (interaction.customId === 'stock_cat')                return await stockCat(interaction);
       if (interaction.customId === 'rec_prof')                 return await recProf(interaction);
@@ -713,15 +714,13 @@ client.on('interactionCreate', async interaction => {
         return await catPage(interaction, cat, page);
       }
       if (id.startsWith('prix_toggle:')) {
-        const [, cat, page, tok] = id.split(':');
-        return await prixToggle(interaction, cat, parseInt(page, 10), tok);
-      }
-      if (id.startsWith('prix:')) {
         const parts = id.split(':');
-        const page  = parseInt(parts.pop(), 10);
-        const tok   = parts.pop();
-        const cat   = parts.slice(1).join(':');
-        return await prixPage(interaction, cat, page, tok);
+        // format: prix_toggle:<regionCol>:<categorie>:<tok>
+        // categorie peut contenir des : (emojis) → on reconstitue
+        const tok       = parts.pop();
+        const regionCol = parts[1];
+        const categorie = parts.slice(2).join(':');
+        return await prixToggle(interaction, regionCol, categorie, tok);
       }
       if (id.startsWith('cmdlist:')) {
         const parts  = id.split(':');
