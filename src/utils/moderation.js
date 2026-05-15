@@ -10,19 +10,21 @@ const BASE_URL       = 'https://integrate.api.nvidia.com/v1';
 const MODEL_8B       = 'meta/llama-3.1-8b-instruct';
 
 // ── Pré-filtre rapide — skip les messages clairement anodins ──────────────────
-// Mots qui, seuls dans un message très court, sont anodins (exclamations de jeu)
-const SAFE_ALONE = new Set(['ok', 'oui', 'non', 'lol', 'haha', 'xd', 'gg', 'np', 'yes', 'no', 'thx', 'merci', '👍', '❤️']);
+const SAFE_ALONE = new Set(['ok', 'oui', 'non', 'lol', 'haha', 'xd', 'gg', 'np', 'yes', 'no', 'thx', 'merci', '👍', '❤️', 'ah', 'oh']);
 
 // Mots porteurs de potentiel offensant — si présents, on appelle l'IA
 const SUSPECTS = [
   // Insultes courantes FR
-  'sale', 'merde', 'connard', 'connasse', 'con', 'conne', 'crétin', 'idiote', 'idiot',
-  'abruti', 'débile', 'imbécile', 'nul', 'nulle', 'bouffon', 'guignol', 'clown',
-  'gueule', 'pute', 'salope', 'enculé', 'pd', 'pédale', 'tapette',
-  'fdp', 'ntm', 'va te', 'fils de', 'nique', 'bâtard', 'batard',
-  'ta mère', 'ta mere', 'race', 'raciste', 'nazi',
-  // Menaces
-  'je vais te', 'je vais vous', 'tu vas', 'va crever', 'crève',
+  'merde', 'connard', 'connasse', 'con ', ' con', 'conne', 'crétin', 'cretine', 'idiot', 'idiote',
+  'abruti', 'débile', 'debile', 'imbécile', 'imbecile', 'bouffon', 'guignol', 'clown',
+  'gueule', 'pute', 'salope', 'enculé', 'encule', 'pd ', ' pd', 'pédale', 'pedale', 'tapette',
+  'fdp', 'ntm', 'fils de', 'nique', 'bâtard', 'batard', 'ta mère', 'ta mere',
+  'race ', 'raciste', 'nazi', 'sale ',
+  // Insultes sexuelles
+  'bite', 'suce', 'sucer', 'couille', 'couilles', 'baiser', 'baise', 'chier',
+  'branle', 'branleur', 'branlette', 'va chier', 'mange',
+  // Menaces / harcèlement
+  'je vais te', 'je vais vous', 'tu vas', 'va crever', "crève", 'creve',
   'suicide', 'tue toi', 'kill yourself', 'kys',
   // Slurs EN
   'nigger', 'nigga', 'faggot', 'bitch', 'cunt',
@@ -58,9 +60,9 @@ function shouldCheckWithAI(content) {
   return SUSPECTS.some(s => lower.includes(s));
 }
 
-// Rate-limiter léger : évite de spammer l'API sur un flood de messages
+// Rate-limiter : évite de spammer l'API, mais assez court pour attraper un flood d'insultes
 const _lastCheck = new Map(); // userId → timestamp
-const RATELIMIT_MS = 3000; // 3s entre deux checks du même user
+const RATELIMIT_MS = 500; // 500ms entre deux checks du même user
 
 // ── Appel NVIDIA llama-3.1-8b ─────────────────────────────────────────────────
 async function askLlama8b(systemPrompt, userPrompt) {
