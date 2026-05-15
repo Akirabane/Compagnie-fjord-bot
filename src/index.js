@@ -40,7 +40,7 @@ function syncMemberPerms(member) {
   } catch {}
 }
 import { enqueue, askNvidia, getQueueSize, splitResponse, buildSystemPrompt, buildVisitorPrompt, getHistory, addToHistory, updatePlayerProfile } from './utils/ia.js';
-import { postWeeklySummary, alerteStockEnrichie, accueilNouveauMembre, relanceCommandesEnAttente, commentaireNouvelleCommande, commentaireNouvelleOffre } from './utils/ia-proactive.js';
+import { postWeeklySummary, accueilNouveauMembre, relanceCommandesEnAttente, commentaireNouvelleCommande, commentaireNouvelleOffre } from './utils/ia-proactive.js';
 import { startMonitoring, alerteNouvelleCommande, calcSegment, segmentEmoji } from './utils/alertes.js';
 import { moderateMessage, handleModerationAppeal, loadWhitelist, loadLibrary, seedModerationWords, registerIAChannels } from './utils/moderation.js';
 import { getForumOffresId, getSellerPostId, setSellerPostId, removeSellerPost, isSellerDone } from './utils/forum.js';

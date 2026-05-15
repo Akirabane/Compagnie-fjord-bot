@@ -11,7 +11,7 @@ export const SECTIONS = {
   nobles:    { cfgKey: 'IA_PROACTIF_NOBLES_ID',     label: 'Nobles',     color: 0x8B0000 },
 };
 
-function getSectionChannel(client, section) {
+async function getSectionChannel(client, section) {
   const id = cfgGet(SECTIONS[section].cfgKey);
   if (!id) return null;
   return client.channels.fetch(id).catch(() => null);
@@ -23,43 +23,71 @@ async function postInSection(client, section, embeds) {
   await channel.send({ embeds }).catch(e => console.error(`[ia-proactif][${section}]`, e.message));
 }
 
-// ── Appel IA pour générer un texte narratif ───────────────────────────────────
-async function narrateIA(prompt, systemPrompt) {
+// ── Routeur IA ────────────────────────────────────────────────────────────────
+// Demande à l'IA de décider si l'événement mérite un post, dans quels salons,
+// et génère le message adapté à chaque section en un seul appel.
+// Retourne : [{ section, message }] ou [] si inutile.
+const PROMPT_ROUTEUR = `Tu es le système de communication proactif de la Compagnie du Fjord, guilde marchande sur le serveur Minecraft RP Viking Vyldra.
+Tu reçois des événements internes et tu dois décider :
+1. Si cet événement mérite d'être communiqué (certains sont trop banals ou redondants)
+2. Dans quels salons le publier parmi : visiteurs, domaine, nobles
+3. Le message adapté au ton de chaque section ciblée
+
+Sections disponibles et leurs audiences :
+- visiteurs : voyageurs extérieurs et clients potentiels. Ton chaleureux, commercial, accessible. Ne révèle pas les détails internes sensibles.
+- domaine : marchands et membres (Paysans, Écuyers, Compagnie). Ton professionnel, camaraderie viking, direct.
+- nobles : dirigeants (Nobles, Jarl). Ton formel, stratégique. Seulement pour événements à fort enjeu.
+
+Règles :
+- Si l'événement est banal ou redondant avec d'autres systèmes d'alerte, réponds post:false
+- Les alertes de stock bas sont inutiles dans ces salons — ne les poste jamais (post:false)
+- Une grosse commande ou une offre rare peut valoir une mention, une commande ordinaire non
+- Le salon nobles ne reçoit que ce qui a un impact stratégique ou financier notable
+- Rédige en prose RP viking médiéval, 2-4 phrases max par section, sans bullet points
+
+Réponds UNIQUEMENT en JSON valide, format strict :
+{"post":true,"sections":[{"section":"domaine","message":"..."},{"section":"visiteurs","message":"..."}]}
+ou si inutile :
+{"post":false}`;
+
+async function router(evenement) {
   try {
-    return await askNvidia(prompt, systemPrompt, []);
+    const raw = await askNvidia(evenement, PROMPT_ROUTEUR, []);
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return [];
+    const parsed = JSON.parse(match[0]);
+    if (!parsed.post) return [];
+    return parsed.sections ?? [];
   } catch {
-    return null;
+    return [];
   }
 }
 
-// ── Prompts système par section ───────────────────────────────────────────────
-const PROMPT_DOMAINE = `Tu es l'Intendant de la Compagnie du Fjord, sur le serveur Minecraft RP Viking Vyldra.
-Tu t'adresses aux Marchands et membres de la Compagnie — tes camarades de travail.
-Ton ton est professionnel mais chaleureux, direct, loyal. Tu parles comme un gestionnaire viking chevronné.
-Tu utilises parfois des formules nordiques ou médiévales (camarade, mes frères, Skål, etc.).
-Sois concis (3-5 phrases max) et utile. Pas de bullet points dans ta narration, parle en prose.`;
+// ── Prompts résumé quotidien par section ──────────────────────────────────────
+const PROMPT_RESUME_DOMAINE = `Tu es l'Intendant de la Compagnie du Fjord (Minecraft RP Viking Vyldra).
+Tu t'adresses aux marchands et membres. Ton professionnel, chaleureux, viking.
+Rédige en prose, 3-5 phrases, sans bullet points.`;
 
-const PROMPT_NOBLES = `Tu es le Conseiller Principal de la Compagnie du Fjord, sur le serveur Minecraft RP Viking Vyldra.
-Tu t'adresses aux Nobles et dirigeants — les décideurs du Domaine.
-Ton ton est respectueux, formel, stratégique. Tu rapportes comme un vassal instruit à ses seigneurs.
-Tu utilises un langage soutenu, quasi diplomatique. Tu conclus souvent par une recommandation d'action.
-Sois concis (3-5 phrases max) et précis. Pas de bullet points, parle en prose noble.`;
+const PROMPT_RESUME_NOBLES = `Tu es le Conseiller Principal de la Compagnie du Fjord (Minecraft RP Viking Vyldra).
+Tu t'adresses aux Nobles et dirigeants. Ton formel, stratégique, diplomatique.
+Conclus par une recommandation d'action. 3-5 phrases, prose, sans bullet points.`;
 
-const PROMPT_VISITEURS = `Tu es le Commis aux Visiteurs de la Compagnie du Fjord, sur le serveur Minecraft RP Viking Vyldra.
-Tu t'adresses à des visiteurs extérieurs — potentiels clients ou vendeurs qui découvrent la Compagnie.
-Ton ton est accueillant, enthousiaste, commercial. Tu valorises la Compagnie et ses services.
-Utilise des formules chaleureuses mais reste dans le thème viking médiéval RP.
-Sois concis (3-5 phrases max). Pas de bullet points, parle en prose accessible.`;
+const PROMPT_RESUME_VISITEURS = `Tu es le Commis aux Visiteurs de la Compagnie du Fjord (Minecraft RP Viking Vyldra).
+Tu t'adresses à des visiteurs extérieurs. Ton chaleureux, commercial. Ne révèle pas les détails internes.
+2-3 phrases de valorisation de la Compagnie, prose, sans bullet points.`;
+
+async function narrateIA(prompt, systemPrompt) {
+  try { return await askNvidia(prompt, systemPrompt, []); } catch { return null; }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FEATURE 1 — Résumé hebdomadaire (lundi 9h)
+// FEATURE 1 — Résumé quotidien 16h
 // ─────────────────────────────────────────────────────────────────────────────
 export async function postWeeklySummary(client) {
   const today = new Date().toISOString().slice(0, 10);
   if (cfgGet('LAST_WEEKLY_SUMMARY') === today) return;
-  cfgSet_local('LAST_WEEKLY_SUMMARY', today);
+  db.prepare("INSERT OR REPLACE INTO config (key,value) VALUES ('LAST_WEEKLY_SUMMARY',?)").run(today);
 
-  // Données de la semaine
   const since = "datetime('now','-7 days')";
   const commandesSemaine = db.prepare(
     `SELECT COUNT(*) as nb, SUM(prix_total) as total FROM commandes WHERE statut='livree' AND creee_le >= ${since}`
@@ -84,76 +112,22 @@ export async function postWeeklySummary(client) {
   ].filter(Boolean).join(' ');
 
   const date = new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
-
-  // Domaine
-  const narrateDomaine = await narrateIA(
-    `Voici les chiffres de la semaine : ${resumeBrut}\nRédige un résumé hebdomadaire narratif pour les marchands de la Compagnie.`,
-    PROMPT_DOMAINE
-  );
-  // Nobles
-  const narrateNobles = await narrateIA(
-    `Voici les chiffres de la semaine : ${resumeBrut}\nRédige un rapport hebdomadaire stratégique pour les Nobles dirigeants de la Compagnie.`,
-    PROMPT_NOBLES
-  );
-  // Visiteurs
-  const narrateVisiteurs = await narrateIA(
-    `Voici les chiffres de la semaine : ${resumeBrut}\nRédige un bref message d'ambiance commerciale pour les visiteurs de la Compagnie, sans révéler les détails internes. Valorise la Compagnie.`,
-    PROMPT_VISITEURS
-  );
-
-  const embedBase = (titre, narration, color) => new EmbedBuilder()
+  const mkEmbed = (texte, footer, color) => new EmbedBuilder()
     .setTitle(`📜 Chronique du jour — ${date}`)
-    .setDescription(narration ?? resumeBrut)
+    .setDescription(texte)
     .setColor(color)
-    .setFooter({ text: titre })
+    .setFooter({ text: footer })
     .setTimestamp();
 
-  if (narrateDomaine)
-    await postInSection(client, 'domaine', [embedBase('Rapport — Membres de la Compagnie', narrateDomaine, 0xC9A84C)]);
-  if (narrateNobles)
-    await postInSection(client, 'nobles', [embedBase('Rapport aux Seigneurs — Compagnie du Fjord', narrateNobles, 0x8B0000)]);
-  if (narrateVisiteurs)
-    await postInSection(client, 'visiteurs', [embedBase('La Compagnie du Fjord — Cette semaine', narrateVisiteurs, 0x5865F2)]);
-}
+  const [nDomaine, nNobles, nVisiteurs] = await Promise.all([
+    narrateIA(`Voici les chiffres : ${resumeBrut}\nRédige un résumé narratif pour les marchands.`, PROMPT_RESUME_DOMAINE),
+    narrateIA(`Voici les chiffres : ${resumeBrut}\nRédige un rapport stratégique pour les Nobles.`, PROMPT_RESUME_NOBLES),
+    narrateIA(`Voici les chiffres : ${resumeBrut}\nRédige un message d'ambiance commerciale pour les visiteurs, sans détails internes.`, PROMPT_RESUME_VISITEURS),
+  ]);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FEATURE 2 — Alerte stock enrichie par l'IA
-// ─────────────────────────────────────────────────────────────────────────────
-const stockCooldowns = new Map();
-
-export async function alerteStockEnrichie(client, ressource, quantite, unite, seuil) {
-  const cle = `stock-ia:${ressource}`;
-  const last = stockCooldowns.get(cle) ?? 0;
-  if (Date.now() - last < 6 * 3600_000) return; // cooldown 6h
-  stockCooldowns.set(cle, Date.now());
-
-  const epuise = quantite === 0;
-  const contexte = epuise
-    ? `La ressource "${ressource}" est complètement épuisée dans les entrepôts de la Compagnie.`
-    : `La ressource "${ressource}" est à ${quantite} ${unite}, sous le seuil d'alerte de ${seuil} ${unite}.`;
-
-  const narrateDomaine = await narrateIA(
-    `${contexte} Rédige une alerte RP pour les marchands.`,
-    PROMPT_DOMAINE
-  );
-  const narrateNobles = await narrateIA(
-    `${contexte} Rédige une alerte concise et stratégique pour les Nobles.`,
-    PROMPT_NOBLES
-  );
-
-  const color = epuise ? 0xFF0000 : 0xFF8C00;
-  const titre = epuise ? `⬛ Stock épuisé — ${ressource}` : `⚠️ Stock bas — ${ressource}`;
-
-  if (narrateDomaine) {
-    const embed = new EmbedBuilder().setTitle(titre).setDescription(narrateDomaine).setColor(color)
-      .setFooter({ text: 'Intendant — Alerte Entrepôts' }).setTimestamp();
-    await postInSection(client, 'domaine', [embed]);
-  }
-  if (narrateNobles) {
-    const embed = new EmbedBuilder().setTitle(titre).setDescription(narrateNobles).setColor(color)
-      .setFooter({ text: 'Conseiller — Rapport Stratégique' }).setTimestamp();
-    await postInSection(client, 'nobles', [embed]);
-  }
+  if (nDomaine)   await postInSection(client, 'domaine',   [mkEmbed(nDomaine,   'Rapport — Membres de la Compagnie',         0xC9A84C)]);
+  if (nNobles)    await postInSection(client, 'nobles',    [mkEmbed(nNobles,    'Rapport aux Seigneurs — Compagnie du Fjord', 0x8B0000)]);
+  if (nVisiteurs) await postInSection(client, 'visiteurs', [mkEmbed(nVisiteurs, 'La Compagnie du Fjord — Aujourd\'hui',       0x5865F2)]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -161,10 +135,9 @@ export async function alerteStockEnrichie(client, ressource, quantite, unite, se
 // ─────────────────────────────────────────────────────────────────────────────
 export async function accueilNouveauMembre(client, member) {
   const pseudo = member.displayName ?? member.user.globalName ?? member.user.username;
-
   const narration = await narrateIA(
-    `Un nouveau visiteur nommé "${pseudo}" vient d'arriver sur le serveur de la Compagnie du Fjord. Rédige un message d'accueil chaleureux et immersif pour l'accueillir dans le salon des visiteurs.`,
-    PROMPT_VISITEURS
+    `Un nouveau visiteur nommé "${pseudo}" vient d'arriver. Rédige un message d'accueil chaleureux et immersif.`,
+    `Tu es le Commis aux Visiteurs de la Compagnie du Fjord (Minecraft RP Viking Vyldra). Ton chaleureux, 2-3 phrases, prose.`
   );
   if (!narration) return;
 
@@ -180,7 +153,7 @@ export async function accueilNouveauMembre(client, member) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FEATURE 4 — Relance commandes en attente +48h (DM + annonce salon Domaine)
+// FEATURE 4 — Relance commandes en attente +48h
 // ─────────────────────────────────────────────────────────────────────────────
 const relanceCooldowns = new Map();
 
@@ -192,42 +165,37 @@ export async function relanceCommandesEnAttente(client) {
   for (const cmd of vieilles) {
     const cle = `relance:${cmd.id}`;
     const last = relanceCooldowns.get(cle) ?? 0;
-    if (Date.now() - last < 24 * 3600_000) continue; // relance max 1x/24h
+    if (Date.now() - last < 24 * 3600_000) continue;
     relanceCooldowns.set(cle, Date.now());
 
-    // DM au client
-    try {
-      const user = await client.users.fetch(cmd.client_id).catch(() => null);
-      if (user) {
-        const texte = await narrateIA(
-          `La commande #${String(cmd.id).padStart(4,'0')} de "${cmd.client_pseudo}" pour "${cmd.ressource} ×${cmd.quantite} ${cmd.unite}" est en attente depuis plus de 48h. Rédige un DM poli et RP pour informer le client que sa commande est toujours en cours de traitement et le rassurer.`,
-          PROMPT_VISITEURS
-        );
-        if (texte) {
-          const embed = new EmbedBuilder()
-            .setTitle(`📦 Votre commande est en cours de traitement`)
-            .setDescription(texte)
-            .setColor(0xC9A84C)
-            .setFooter({ text: `Commande #${String(cmd.id).padStart(4,'0')} — Compagnie du Fjord` })
-            .setTimestamp();
-          await user.send({ embeds: [embed] }).catch(() => {});
-        }
+    // DM client
+    const user = await client.users.fetch(cmd.client_id).catch(() => null);
+    if (user) {
+      const texte = await narrateIA(
+        `Commande #${String(cmd.id).padStart(4,'0')} de "${cmd.client_pseudo}" pour "${cmd.ressource} ×${cmd.quantite} ${cmd.unite}" en attente +48h. Rédige un DM rassurant et RP.`,
+        `Tu es le Commis aux Visiteurs de la Compagnie du Fjord. Ton poli, chaleureux, RP viking. 2-3 phrases.`
+      );
+      if (texte) {
+        const embed = new EmbedBuilder()
+          .setTitle(`📦 Votre commande est en cours de traitement`)
+          .setDescription(texte).setColor(0xC9A84C)
+          .setFooter({ text: `Commande #${String(cmd.id).padStart(4,'0')} — Compagnie du Fjord` })
+          .setTimestamp();
+        await user.send({ embeds: [embed] }).catch(() => {});
       }
-    } catch {}
+    }
 
-    // Alerte salon Domaine
-    const narrateDomaine = await narrateIA(
-      `La commande #${String(cmd.id).padStart(4,'0')} de "${cmd.client_pseudo}" pour "${cmd.ressource} ×${cmd.quantite} ${cmd.unite}" (${cmd.prix_total} bronze) est en attente depuis plus de 48h sans traitement. Rédige une alerte interne pour les marchands pour les inciter à traiter cette commande rapidement.`,
-      PROMPT_DOMAINE
-    );
-    if (narrateDomaine) {
+    // Routeur IA → décide si alerte Domaine/Nobles et rédige
+    const evenement = `Événement interne : la commande #${String(cmd.id).padStart(4,'0')} de "${cmd.client_pseudo}" pour "${cmd.ressource} ×${cmd.quantite} ${cmd.unite}" (${cmd.prix_total} bronze) est en attente sans traitement depuis plus de 48h. Faut-il alerter les marchands ou les Nobles ?`;
+    const decisions = await router(evenement);
+    for (const { section, message } of decisions) {
+      if (!SECTIONS[section]) continue;
       const embed = new EmbedBuilder()
-        .setTitle(`⏳ Commande #${String(cmd.id).padStart(4,'0')} — Relance nécessaire`)
-        .setDescription(narrateDomaine)
-        .setColor(0xFF8C00)
-        .setFooter({ text: `Client : ${cmd.client_pseudo} · ${cmd.ressource} ×${cmd.quantite}` })
+        .setTitle(`⏳ Commande #${String(cmd.id).padStart(4,'0')} — Relance`)
+        .setDescription(message).setColor(0xFF8C00)
+        .setFooter({ text: `${cmd.client_pseudo} · ${cmd.ressource} ×${cmd.quantite}` })
         .setTimestamp();
-      await postInSection(client, 'domaine', [embed]);
+      await postInSection(client, section, [embed]);
     }
   }
 }
@@ -236,72 +204,31 @@ export async function relanceCommandesEnAttente(client) {
 // FEATURE 6 — Commentaire IA sur nouvelle commande / offre de vente
 // ─────────────────────────────────────────────────────────────────────────────
 export async function commentaireNouvelleCommande(client, commande) {
-  const contexte = `Une nouvelle commande a été passée : "${commande.client_pseudo}" commande "${commande.ressource} ×${commande.quantite} ${commande.unite}" pour ${commande.prix_total} bronze. Note client : "${commande.note || 'aucune'}".`;
-
-  // Visiteurs : commentaire d'accueil de la commande
-  const texteVisiteurs = await narrateIA(
-    `${contexte} Rédige un message RP chaleureux pour accueillir cette commande dans le salon des visiteurs, comme si l'Intendant prenait note de la demande.`,
-    PROMPT_VISITEURS
-  );
-  // Domaine : notification interne
-  const texteDomaine = await narrateIA(
-    `${contexte} Rédige une courte notification interne RP pour informer les marchands qu'une commande vient d'être enregistrée et demande une prise en charge.`,
-    PROMPT_DOMAINE
-  );
-
-  if (texteVisiteurs) {
+  const evenement = `Nouvelle commande enregistrée : "${commande.client_pseudo}" commande "${commande.ressource} ×${commande.quantite} ${commande.unite}" pour ${commande.prix_total} bronze. Note : "${commande.note || 'aucune'}". Faut-il en informer les salons ?`;
+  const decisions = await router(evenement);
+  for (const { section, message } of decisions) {
+    if (!SECTIONS[section]) continue;
+    const titles = { visiteurs: '🛒 Nouvelle commande enregistrée', domaine: `📋 Commande #${String(commande.id).padStart(4,'0')} — À traiter`, nobles: '📊 Commande notable' };
     const embed = new EmbedBuilder()
-      .setTitle(`🛒 Nouvelle commande enregistrée`)
-      .setDescription(texteVisiteurs)
-      .setColor(0x5865F2)
-      .setFooter({ text: `${commande.client_pseudo} · ${commande.ressource} ×${commande.quantite}` })
-      .setTimestamp();
-    await postInSection(client, 'visiteurs', [embed]);
-  }
-  if (texteDomaine) {
-    const embed = new EmbedBuilder()
-      .setTitle(`📋 Commande #${String(commande.id).padStart(4,'0')} — À traiter`)
-      .setDescription(texteDomaine)
-      .setColor(0xC9A84C)
+      .setTitle(titles[section] ?? '📋 Commande')
+      .setDescription(message).setColor(SECTIONS[section].color)
       .setFooter({ text: `${commande.client_pseudo} · ${commande.ressource} ×${commande.quantite} · ${commande.prix_total}🟤` })
       .setTimestamp();
-    await postInSection(client, 'domaine', [embed]);
+    await postInSection(client, section, [embed]);
   }
 }
 
 export async function commentaireNouvelleOffre(client, offre) {
-  const contexte = `Un vendeur nommé "${offre.vendeur_pseudo}" propose "${offre.ressource} ×${offre.quantite} ${offre.unite}" au prix de ${offre.prix_demande} bronze. Note : "${offre.note || 'aucune'}".`;
-
-  const texteDomaine = await narrateIA(
-    `${contexte} Rédige une courte notification interne RP pour informer les marchands qu'une nouvelle offre de vente est disponible.`,
-    PROMPT_DOMAINE
-  );
-  const texteNobles = await narrateIA(
-    `${contexte} Rédige une note stratégique concise pour les Nobles : est-ce une ressource intéressante à acquérir pour la Compagnie ?`,
-    PROMPT_NOBLES
-  );
-
-  if (texteDomaine) {
+  const evenement = `Nouvelle offre de vente : "${offre.vendeur_pseudo}" propose "${offre.ressource} ×${offre.quantite} ${offre.unite}" à ${offre.prix_demande} bronze. Note : "${offre.note || 'aucune'}". Faut-il en informer les salons ?`;
+  const decisions = await router(evenement);
+  for (const { section, message } of decisions) {
+    if (!SECTIONS[section]) continue;
+    const titles = { domaine: `🏪 Nouvelle offre — ${offre.ressource}`, nobles: '📊 Offre stratégique', visiteurs: `🏪 ${offre.ressource} disponible` };
     const embed = new EmbedBuilder()
-      .setTitle(`🏪 Nouvelle offre de vente — ${offre.ressource}`)
-      .setDescription(texteDomaine)
-      .setColor(0xC9A84C)
+      .setTitle(titles[section] ?? `🏪 ${offre.ressource}`)
+      .setDescription(message).setColor(SECTIONS[section].color)
       .setFooter({ text: `${offre.vendeur_pseudo} · ${offre.ressource} ×${offre.quantite} · ${offre.prix_demande}🟤` })
       .setTimestamp();
-    await postInSection(client, 'domaine', [embed]);
+    await postInSection(client, section, [embed]);
   }
-  if (texteNobles) {
-    const embed = new EmbedBuilder()
-      .setTitle(`📊 Offre de vente — Note stratégique`)
-      .setDescription(texteNobles)
-      .setColor(0x8B0000)
-      .setFooter({ text: `${offre.vendeur_pseudo} · ${offre.ressource} ×${offre.quantite} · ${offre.prix_demande}🟤` })
-      .setTimestamp();
-    await postInSection(client, 'nobles', [embed]);
-  }
-}
-
-// Helper local cfgSet (évite import circulaire si besoin)
-function cfgSet_local(key, value) {
-  db.prepare('INSERT OR REPLACE INTO config (key,value) VALUES (?,?)').run(key, value);
 }

@@ -2,7 +2,6 @@ import { EmbedBuilder } from 'discord.js';
 import db, { stmts } from '../db/database.js';
 import { cfgGet } from './setup.js';
 import { getSaisonInfo, getCulturesParSaison, SAISON_LABELS, SAISON_EMOJIS } from './saison.js';
-import { alerteStockEnrichie } from './ia-proactive.js';
 
 const COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2h entre deux alertes identiques
 
@@ -65,7 +64,6 @@ async function checkStockAlertes(client) {
         .setTimestamp();
 
       await sendAlerte(client, embed);
-      alerteStockEnrichie(client, s.ressource, s.quantite, s.unite, s.seuil_alerte).catch(() => {});
     }
   } catch (e) { console.error('[checkStock]', e.message); }
 }
