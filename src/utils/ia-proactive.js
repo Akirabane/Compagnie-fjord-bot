@@ -196,7 +196,7 @@ export async function relanceCommandesEnAttente(client) {
     relanceCooldowns.set(cle, Date.now());
 
     // Niveau 3 : évaluer l'urgence selon historique client
-    const estPrioritaire = cmd.nb_livrees >= 5 || cmd.prix_total >= 300;
+    const estPrioritaire = cmd.nb_livrees >= 5 || cmd.prix_total >= 25;
 
     // DM client
     const user = await client.users.fetch(cmd.client_id).catch(() => null);
