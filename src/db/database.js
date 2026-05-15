@@ -270,6 +270,28 @@ db.exec(`
 `);
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS moderation_whitelist (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    terme     TEXT NOT NULL UNIQUE,
+    raison    TEXT DEFAULT '',
+    ajoute_le TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS moderation_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         TEXT NOT NULL,
+    message_content TEXT NOT NULL,
+    channel_id      TEXT DEFAULT '',
+    guild_id        TEXT DEFAULT '',
+    action          TEXT DEFAULT 'deleted',
+    reviewed        INTEGER DEFAULT 0,
+    review_result   TEXT DEFAULT NULL,
+    created_at      TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_modlog_user ON moderation_log(user_id, created_at DESC);
+`);
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     sid        TEXT PRIMARY KEY,
     data       TEXT NOT NULL,

@@ -41,6 +41,7 @@ function syncMemberPerms(member) {
 }
 import { enqueue, askNvidia, getQueueSize, splitResponse, buildSystemPrompt, buildVisitorPrompt, getHistory, addToHistory, updatePlayerProfile } from './utils/ia.js';
 import { startMonitoring, alerteNouvelleCommande, calcSegment, segmentEmoji } from './utils/alertes.js';
+import { moderateMessage, handleModerationAppeal, loadWhitelist, registerIAChannels } from './utils/moderation.js';
 import { getForumOffresId, getSellerPostId, setSellerPostId, removeSellerPost, isSellerDone } from './utils/forum.js';
 import {
   handleMetiersManageBase, handleMetiersManageSpec,
@@ -246,6 +247,10 @@ client.once('clientReady', async () => {
   await postAideEmbed(client);
   startMonitoring(client);
   setInterval(() => drainActionQueue(client).catch(() => {}), 5000);
+
+  // Modération — charger whitelist + exclure canaux IA
+  loadWhitelist();
+  registerIAChannels(cfgGet('AI_CHANNEL_ID'), cfgGet('AI_CHANNEL_VISITEURS_ID'));
 });
 
 // ── Nouveau membre → rôle Visiteur automatique ────────────────────────────────
@@ -575,6 +580,11 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
+    // ── Appel modération (DM) ─────────────────────────────────────────────────
+    if (interaction.isButton() && interaction.customId.startsWith('mod_appeal:')) {
+      return await handleModerationAppeal(interaction);
+    }
+
     // ── Select menus ──────────────────────────────────────────────────────────
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === 'cat_select')               return await catSelect(interaction);
@@ -849,6 +859,9 @@ function autoDelete(msg) {
 client.on('messageCreate', async message => {
   if (message.author.bot) return;
   if (!message.content?.trim()) return;
+
+  // Modération — traitement asynchrone pour ne pas bloquer le reste
+  moderateMessage(message).catch(() => {});
 
   const villageId   = cfgGet('AI_CHANNEL_ID');
   const visiteursId = cfgGet('AI_CHANNEL_VISITEURS_ID');
