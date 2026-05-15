@@ -6,6 +6,10 @@
   const canvas = document.getElementById('bg-canvas');
   if (!canvas || typeof THREE === 'undefined') return;
 
+  // iOS Safari ignore parfois pointer-events:none sur canvas — forcer via JS
+  canvas.style.pointerEvents = 'none';
+  canvas.style.touchAction   = 'none';
+
   const isMobile = window.innerWidth < 768;
 
   // ── Renderer ──────────────────────────────────────────────────────────────

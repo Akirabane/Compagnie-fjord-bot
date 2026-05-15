@@ -1,6 +1,7 @@
 import { EmbedBuilder } from 'discord.js';
 import db, { stmts } from '../db/database.js';
 import { cfgGet } from './setup.js';
+import { getSaisonInfo, getCulturesParSaison, SAISON_LABELS, SAISON_EMOJIS } from './saison.js';
 
 const COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2h entre deux alertes identiques
 
@@ -176,11 +177,54 @@ export async function alerteNouvelleCommande(client, commande) {
   } catch {}
 }
 
+const COULEURS_SAISON = { printemps: 0x90EE90, ete: 0xFFD700, automne: 0xD2691E, hiver: 0xADD8E6 };
+
+async function checkChangementSaison(client) {
+  try {
+    const info = getSaisonInfo();
+    if (!info) return;
+
+    const precedente = stmts.cfgGet.get('SAISON_PRECEDENTE')?.value;
+    if (precedente === info.saison) return;
+
+    // La saison a changé — on met à jour SAISON_PRECEDENTE
+    stmts.cfgSet.run('SAISON_PRECEDENTE', info.saison);
+
+    const cultures  = getCulturesParSaison(info.saison);
+    const normales  = cultures.filter(c => !c.perenne).map(c => c.nom);
+    const perennes  = cultures.filter(c => c.perenne).map(c => c.nom);
+
+    const maintenant = Date.now();
+    const prochaineTs = Math.floor(info.finSaisonTs / 1000);
+
+    const embed = new EmbedBuilder()
+      .setTitle(`${info.emoji} Changement de saison — ${info.label} commence !`)
+      .setDescription(
+        `Le monde de Vyldra entre dans une nouvelle phase.\n` +
+        `Prochaine saison : **${info.prochaineEmoji} ${info.prochaineLabel}** <t:${prochaineTs}:R>`
+      )
+      .setColor(COULEURS_SAISON[info.saison])
+      .addFields(
+        normales.length
+          ? { name: '🌱 Cultures de saison (poussent normalement)', value: normales.join(', '), inline: false }
+          : { name: '🌱 Cultures de saison', value: 'Aucune culture en saison.', inline: false },
+        perennes.length
+          ? { name: '🔄 Cultures pérennes actives (repousse 10 min)', value: perennes.join(', '), inline: false }
+          : [],
+      )
+      .setFooter({ text: 'Intelligence Économique — Compagnie du Fjord' })
+      .setTimestamp();
+
+    await sendAlerte(client, embed);
+  } catch (e) { console.error('[checkSaison]', e.message); }
+}
+
 // ── Démarrage du monitoring ────────────────────────────────────────────────────
 export function startMonitoring(client) {
   const INTERVAL = 5 * 60 * 1000; // toutes les 5 min
 
   const tick = async () => {
+    await checkChangementSaison(client);
     await checkStockAlertes(client);
     await checkCommandesEnAttente(client);
     await checkTresorerie(client);

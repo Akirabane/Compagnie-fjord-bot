@@ -1,5 +1,6 @@
 import db, { stmts } from '../db/database.js';
 import { cfgGet, cfgSet } from './setup.js';
+import { getSaisonSummaryText, SAISON_LABELS, SAISON_EMOJIS } from './saison.js';
 
 const NVIDIA_API_KEY = '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';
 const BASE_URL       = 'https://integrate.api.nvidia.com/v1';
@@ -474,9 +475,32 @@ export function buildSystemPrompt(userId = null) {
 
   const date = new Date().toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
+  // Données saisonnières
+  const saisonData = getSaisonSummaryText();
+  let saisonSection = '';
+  if (saisonData) {
+    const { info, cultures, perennes, dureeStr } = saisonData;
+    saisonSection = `
+--- Saison actuelle de Vyldra ---
+${info.emoji} **${info.label}** (prochaine : ${info.prochaineEmoji} ${info.prochaineLabel} dans ~${dureeStr})
+Cultures qui poussent normalement : ${cultures.length ? cultures.join(', ') : 'aucune'}
+Cultures pérennes actives (repousse en 10 min) : ${perennes.length ? perennes.join(', ') : 'aucune'}
+Cultures hors saison : ne poussent pas (ou 50% plus lentement si résistantes).
+Mécaniques importantes à connaître :
+• Sol fertile ≥70% : 50% de chance de récolte doublée · Sol épuisé ≤30% : cultures bloquées
+• Perte fertilité : -15% par récolte principale, -10% par fruit secondaire (pérenne)
+• Régénération naturelle : +3% par jour Minecraft si la terre est laissée au repos
+• Os broyé (bone meal) : fertilise le sol (+25%), ne fait plus pousser instantanément
+• Hiver : l'eau peut geler dans les biomes froids. Au printemps, toute la glace fond.
+`;
+  } else {
+    saisonSection = '\n--- Saison actuelle de Vyldra ---\nAucune saison configurée (utiliser /saison set pour initialiser).\n';
+  }
+
   return `${base}
 
 === DONNÉES EN TEMPS RÉEL (${date}) ===
+${saisonSection}
 
 --- Trésorerie de la Compagnie ---
 ${or} Or 🟡 · ${argent} Argent ⚪ · ${bronze} Bronze 🟤 (${tresor} bronze au total)
@@ -536,9 +560,17 @@ export function buildVisitorPrompt(userId = null) {
 
   const date = new Date().toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
+  const saisonData = getSaisonSummaryText();
+  let saisonLine = '';
+  if (saisonData) {
+    const { info, cultures, dureeStr } = saisonData;
+    saisonLine = `\n--- Saison en cours ---\n${info.emoji} ${info.label} (prochaine : ${info.prochaineEmoji} ${info.prochaineLabel} dans ~${dureeStr})\nCultures de saison : ${cultures.length ? cultures.join(', ') : 'aucune'}\n`;
+  }
+
   return `${base}
 
 === DONNÉES DU COMPTOIR (${date}) ===
+${saisonLine}
 
 --- Ce que nous vendons ---
 ${stockLines}

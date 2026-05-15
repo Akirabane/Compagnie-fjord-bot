@@ -278,6 +278,58 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS cultures (
+    nom                TEXT PRIMARY KEY,
+    saisons            TEXT NOT NULL,
+    perenne            INTEGER DEFAULT 0,
+    temps_repousse_min INTEGER DEFAULT NULL,
+    perte_fertilite    INTEGER DEFAULT 15,
+    resistante         INTEGER DEFAULT 0
+  );
+`);
+
+// Seed des cultures (idempotent via INSERT OR IGNORE)
+const CULTURES_SEED = [
+  { nom: 'Blé',            saisons: ['printemps','ete'],              perenne: 0, temps: null, perte: 15 },
+  { nom: 'Carotte',        saisons: ['printemps','ete','automne'],    perenne: 0, temps: null, perte: 15 },
+  { nom: 'Pomme de terre', saisons: ['printemps','ete','automne'],    perenne: 0, temps: null, perte: 15 },
+  { nom: 'Baies sucrées',  saisons: ['printemps','automne'],          perenne: 0, temps: null, perte: 15 },
+  { nom: 'Oignon',         saisons: ['printemps','automne'],          perenne: 0, temps: null, perte: 15 },
+  { nom: 'Chou',           saisons: ['printemps','automne'],          perenne: 0, temps: null, perte: 15 },
+  { nom: 'Ail',            saisons: ['printemps'],                    perenne: 0, temps: null, perte: 15 },
+  { nom: 'Brocoli',        saisons: ['printemps','automne'],          perenne: 0, temps: null, perte: 15 },
+  { nom: 'Chou-fleur',     saisons: ['printemps','automne'],          perenne: 0, temps: null, perte: 15 },
+  { nom: 'Persil',         saisons: ['printemps'],                    perenne: 0, temps: null, perte: 15 },
+  { nom: 'Raisin blanc',   saisons: ['printemps','ete'],              perenne: 1, temps: 10,   perte: 10 },
+  { nom: 'Melon',          saisons: ['ete'],                          perenne: 1, temps: 10,   perte: 10 },
+  { nom: 'Citrouille',     saisons: ['ete','automne'],                perenne: 1, temps: 10,   perte: 10 },
+  { nom: 'Canne à sucre',  saisons: ['ete'],                          perenne: 0, temps: null, perte: 15 },
+  { nom: 'Cacao',          saisons: ['ete'],                          perenne: 0, temps: null, perte: 15 },
+  { nom: 'Tomate',         saisons: ['ete'],                          perenne: 1, temps: 10,   perte: 10 },
+  { nom: 'Riz',            saisons: ['ete'],                          perenne: 0, temps: null, perte: 15 },
+  { nom: 'Patate douce',   saisons: ['ete','automne'],                perenne: 0, temps: null, perte: 15 },
+  { nom: 'Courgette',      saisons: ['ete'],                          perenne: 0, temps: null, perte: 15 },
+  { nom: 'Poivron',        saisons: ['ete'],                          perenne: 0, temps: null, perte: 15 },
+  { nom: 'Orge',           saisons: ['ete'],                          perenne: 0, temps: null, perte: 15 },
+  { nom: 'Maïs',           saisons: ['ete'],                          perenne: 0, temps: null, perte: 15 },
+  { nom: 'Houblon',        saisons: ['ete'],                          perenne: 0, temps: null, perte: 15 },
+  { nom: 'Raisin rouge',   saisons: ['ete','automne'],                perenne: 1, temps: 10,   perte: 10 },
+  { nom: 'Raisin jungle',  saisons: ['ete'],                          perenne: 1, temps: 10,   perte: 10 },
+  { nom: 'Raisin savane',  saisons: ['ete'],                          perenne: 1, temps: 10,   perte: 10 },
+  { nom: 'Vigne',          saisons: ['ete','automne'],                perenne: 1, temps: 10,   perte: 10 },
+  { nom: 'Betterave',      saisons: ['automne'],                      perenne: 0, temps: null, perte: 15 },
+  { nom: 'Navet',          saisons: ['automne','hiver'],              perenne: 0, temps: null, perte: 15 },
+  { nom: 'Raisin taïga',   saisons: ['automne','hiver'],              perenne: 1, temps: 10,   perte: 10 },
+];
+const _cultureInsert = db.prepare(`
+  INSERT OR IGNORE INTO cultures (nom, saisons, perenne, temps_repousse_min, perte_fertilite)
+  VALUES (?, ?, ?, ?, ?)
+`);
+for (const c of CULTURES_SEED) {
+  _cultureInsert.run(c.nom, JSON.stringify(c.saisons), c.perenne, c.temps, c.perte);
+}
+
 // Index (idempotents)
 for (const idx of [
   'CREATE INDEX IF NOT EXISTS idx_commandes_statut   ON commandes(statut)',

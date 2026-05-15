@@ -15,6 +15,10 @@ import {
 import { askNvidia, buildSystemPrompt, getHistory, addToHistory, updatePlayerProfile } from '../src/utils/ia.js';
 import { calcSegment, segmentEmoji } from '../src/utils/alertes.js';
 import { createRequest, processRequest, approveRequest, refuseRequest, storePendingActions } from '../src/utils/code-agent.js';
+import {
+  SAISONS, SAISON_LABELS, SAISON_EMOJIS,
+  getSaisonInfo, setSaison as setSaisonUtil, getCulturesParSaison, getAllCultures,
+} from '../src/utils/saison.js';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const app        = express();
@@ -1471,6 +1475,25 @@ app.get('/api/calendrier', requireAuth, (_req, res) => {
     "SELECT id, vendeur_pseudo, acheteur_pseudo, ressource, quantite, unite, prix_total, statut, echeance_le, creee_le FROM contrats WHERE statut IN ('ouvert','accepte') ORDER BY echeance_le ASC"
   ).all();
   res.json({ commandes, contrats });
+});
+
+// ── Saisons ───────────────────────────────────────────────────────────────────
+app.get('/api/saison', requireAuth, (_req, res) => {
+  const info     = getSaisonInfo();
+  const cultures = info ? getCulturesParSaison(info.saison) : [];
+  const toutes   = getAllCultures();
+  res.json({ info, cultures, toutes });
+});
+
+app.post('/api/saison/set', requireWrite, (req, res) => {
+  const { saison } = req.body;
+  if (!SAISONS.includes(saison)) return res.status(400).json({ error: 'Saison invalide' });
+  try {
+    setSaisonUtil(saison);
+    logActivity('saison_set', `Saison réglée sur ${saison}`, req.session.user?.username ?? '');
+    const info = getSaisonInfo();
+    res.json({ ok: true, info });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 const serveIndex = (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html'));

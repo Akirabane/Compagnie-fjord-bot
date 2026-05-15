@@ -263,6 +263,7 @@ const PAGES = {
   contrats:   { title: '📜 Contrats',                render: renderContrats },
   modifier:   { title: '🛠️ Demandes de modification', render: renderModifier },
   calendrier: { title: '📅 Calendrier', render: renderCalendrier },
+  saison:     { title: '🌾 Saisons & Cultures', render: renderSaison },
 };
 
 function addExportBtn(filename) {
@@ -299,11 +300,55 @@ document.querySelectorAll('.nav-item').forEach(el =>
   el.addEventListener('click', () => { navigate(el.dataset.page); closeSidebar(); }));
 
 // ── DASHBOARD ─────────────────────────────────────────────────────────────────
+function formatCountdown(finTs) {
+  const ms = finTs - Date.now();
+  if (ms <= 0) return 'imminente';
+  const totalMin = Math.round(ms / 60000);
+  const h = Math.floor(totalMin / 60), m = totalMin % 60;
+  return h > 0 ? `${h}h${String(m).padStart(2,'0')}` : `${m} min`;
+}
+
+const SAISON_COLORS = { printemps: '#90EE90', ete: '#FFD700', automne: '#D2691E', hiver: '#ADD8E6' };
+const SAISON_BG    = { printemps: '#90EE9022', ete: '#FFD70022', automne: '#D2691E22', hiver: '#ADD8E622' };
+
 async function renderDashboard() {
-  const [d, tresorData] = await Promise.all([get('/api/stats'), get('/api/tresor')]);
+  const [d, tresorData, saisonData] = await Promise.all([get('/api/stats'), get('/api/tresor'), get('/api/saison')]);
   if (!d) return;
   const { kpis, ventesJ30, cmdParStatut, topProduits, stockParCat, ventesParVendeur, cmdRecentes } = d;
   const tresorBronze = tresorData?.bronze ?? 0;
+
+  // Widget saison
+  const saisonInfo = saisonData?.info ?? null;
+  let saisonWidget = '';
+  if (saisonInfo) {
+    const couleur  = SAISON_COLORS[saisonInfo.saison] ?? 'var(--gold)';
+    const bg       = SAISON_BG[saisonInfo.saison] ?? 'var(--surface2)';
+    const cultures = (saisonData.cultures ?? []);
+    const normales = cultures.filter(c => !c.perenne).map(c => c.nom).join(', ') || '—';
+    const perennes = cultures.filter(c =>  c.perenne).map(c => c.nom).join(', ') || '—';
+    const countdown = formatCountdown(saisonInfo.finSaisonTs);
+    saisonWidget = `
+    <div class="table-wrap" style="margin-bottom:20px;padding:16px 20px;border-left:3px solid ${couleur};background:${bg}">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span style="font-size:28px">${saisonInfo.emoji}</span>
+        <div>
+          <div style="font-size:18px;font-weight:700;color:${couleur}">${saisonInfo.label}</div>
+          <div style="font-size:12px;color:var(--text-dim)">Prochaine saison : ${saisonInfo.prochaineEmoji} ${saisonInfo.prochaineLabel} dans ~${countdown}</div>
+        </div>
+        <button class="btn btn-sm" style="margin-left:auto;font-size:12px" onclick="navigate('saison')">Gérer →</button>
+      </div>
+      <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px">
+        <div><span style="color:var(--text-dim)">🌱 En saison :</span> <span style="color:var(--text)">${normales}</span></div>
+        <div><span style="color:var(--text-dim)">🔄 Pérennes :</span> <span style="color:var(--text)">${perennes}</span></div>
+      </div>
+    </div>`;
+  } else {
+    saisonWidget = `
+    <div class="table-wrap" style="margin-bottom:20px;padding:14px 20px;border-left:3px solid var(--border)">
+      <span style="color:var(--text-dim);font-size:13px">🌾 Aucune saison configurée — </span>
+      <button class="btn btn-sm btn-primary" style="font-size:12px" onclick="navigate('saison')">Initialiser</button>
+    </div>`;
+  }
 
   $('page-content').innerHTML = `
   <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr))">
@@ -314,6 +359,7 @@ async function renderDashboard() {
     ${kpi('📈 Ventes semaine', bronzeShort(kpis.ventesSemaine), '7 derniers jours')}
     ${kpi('📈 Ventes mois', bronzeShort(kpis.ventesMois), '30 derniers jours')}
   </div>
+  ${saisonWidget}
 
   <div class="table-wrap" style="margin-bottom:20px;padding:20px 24px">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
@@ -547,15 +593,38 @@ function catColor(cat) {
 }
 
 async function renderStock() {
+  _saisonCache = null; // reset pour avoir la saison fraîche
   $('topbar-actions').innerHTML = `
     <a class="btn" style="font-size:12px;padding:6px 12px;text-decoration:none" href="/api/export/stock.csv" download>⬇️ Export CSV</a>
     <button class="btn btn-primary" onclick="openAddStock()">+ Ajouter</button>`;
   await loadStock();
 }
 
+let _saisonCache = null;
+async function getSaisonCache() {
+  if (!_saisonCache) _saisonCache = await get('/api/saison');
+  return _saisonCache;
+}
+
+function saisonBadge(nomRessource, saisonData) {
+  if (!saisonData?.info) return '';
+  const cultures = saisonData.toutes ?? [];
+  const culture  = cultures.find(c => c.nom.toLowerCase() === nomRessource.toLowerCase());
+  if (!culture) return '';
+  const saisons = JSON.parse(culture.saisons ?? '[]');
+  const saison  = saisonData.info.saison;
+  if (saisons.includes(saison)) {
+    return `<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:#90EE9033;color:#5a9a5a;border:1px solid #90EE9066">🌱 En saison</span>`;
+  }
+  if (culture.resistante) {
+    return `<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:#FFD70033;color:#a08000;border:1px solid #FFD70066">⚠️ Lente (-50%)</span>`;
+  }
+  return `<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:#ff000022;color:#cc4444;border:1px solid #ff000044">❄️ Hors saison</span>`;
+}
+
 async function loadStock() {
   const params = new URLSearchParams(Object.fromEntries(Object.entries(stockFilters).filter(([,v]) => v !== '')));
-  const d = await get(`/api/stock?${params}`);
+  const [d, saisonData] = await Promise.all([get(`/api/stock?${params}`), getSaisonCache()]);
   if (!d) return;
 
   const catOptions = d.cats.map(c => `<option value="${c}" ${c===stockFilters.cat?'selected':''}>${c}</option>`).join('');
@@ -566,10 +635,12 @@ async function loadStock() {
     const color = catColor(r.categorie);
     const pct = Math.min(100, Math.round((r.quantite / maxQty) * 100));
     const barColor = pct < 15 ? 'var(--red)' : pct < 40 ? 'var(--orange)' : 'var(--green)';
+    const badge = saisonBadge(r.ressource, saisonData);
     return `
     <div class="stock-card">
       <div class="stock-card-top">
         <span class="cat-chip" style="color:${color};background:${color}22;border-color:${color}44">${r.categorie}</span>
+        ${badge ? `<span>${badge}</span>` : ''}
         <button class="btn btn-sm btn-danger btn-icon" title="Supprimer" onclick="deleteStock(${r.id},'${esc(r.ressource)}')">🗑</button>
       </div>
       <div class="stock-name">${r.ressource}</div>
@@ -3167,6 +3238,163 @@ async function refuseModifier(id) {
 }
 
 document.addEventListener('keydown', e => { if (e.key === 'Escape') wikiModalClose(); });
+
+// ── SAISONS & CULTURES ────────────────────────────────────────────────────────
+async function renderSaison() {
+  $('topbar-actions').innerHTML = '';
+  $('page-content').innerHTML = '<div class="empty"><div class="spinner"></div></div>';
+
+  const d = await get('/api/saison');
+  if (!d) return;
+
+  const { info, toutes } = d;
+  const SAISONS_ORDER = ['printemps', 'ete', 'automne', 'hiver'];
+  const LABELS = { printemps: 'Printemps', ete: 'Été', automne: 'Automne', hiver: 'Hiver' };
+  const EMOJIS = { printemps: '🌸', ete: '☀️', automne: '🍂', hiver: '❄️' };
+
+  // Construire index cultures par saison
+  const bySaison = { printemps: [], ete: [], automne: [], hiver: [] };
+  for (const c of toutes) {
+    const ss = JSON.parse(c.saisons ?? '[]');
+    for (const s of ss) bySaison[s]?.push(c);
+  }
+
+  const currentSaison = info?.saison ?? null;
+
+  // Bloc saison courante + changement manuel
+  let currentBlock = '';
+  if (info) {
+    const couleur = SAISON_COLORS[info.saison] ?? 'var(--gold)';
+    const bg      = SAISON_BG[info.saison] ?? 'var(--surface2)';
+    const countdown = formatCountdown(info.finSaisonTs);
+    const prochaineTs = Math.floor(info.finSaisonTs / 1000);
+    currentBlock = `
+    <div class="table-wrap" style="padding:20px 24px;border-left:4px solid ${couleur};background:${bg};margin-bottom:20px">
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <span style="font-size:40px">${info.emoji}</span>
+        <div>
+          <div style="font-size:22px;font-weight:700;color:${couleur}">${info.label}</div>
+          <div style="font-size:13px;color:var(--text-dim)">
+            Prochaine saison : <strong>${info.prochaineEmoji} ${info.prochaineLabel}</strong> dans <strong>~${countdown}</strong>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  } else {
+    currentBlock = `
+    <div class="table-wrap" style="padding:16px 24px;margin-bottom:20px">
+      <p style="color:var(--text-dim)">Aucune saison configurée. Initialisez le cycle en sélectionnant la saison courante sur le serveur Vyldra.</p>
+    </div>`;
+  }
+
+  // Sélecteur de saison
+  const saisonSelector = `
+  <div class="table-wrap" style="padding:16px 24px;margin-bottom:24px">
+    <div style="font-weight:600;color:var(--gold);margin-bottom:12px;font-size:14px">⚙️ Définir la saison courante</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      ${SAISONS_ORDER.map(s => `
+        <button class="btn ${currentSaison === s ? 'btn-primary' : 'btn-ghost'}"
+          style="font-size:13px;${currentSaison === s ? `border-color:${SAISON_COLORS[s]};` : ''}"
+          onclick="setSaisonWeb('${s}')">
+          ${EMOJIS[s]} ${LABELS[s]}${currentSaison === s ? ' ✓' : ''}
+        </button>
+      `).join('')}
+    </div>
+    <div style="font-size:11px;color:var(--text-dim);margin-top:8px">
+      Lancez cette commande le 1er jour de la nouvelle saison sur Vyldra. Le cycle de ~80 min se synchronise automatiquement.
+    </div>
+  </div>`;
+
+  // Tableau des cultures par saison
+  const culturesTable = SAISONS_ORDER.map(s => {
+    const cultures = bySaison[s] ?? [];
+    const isActive = currentSaison === s;
+    const couleur  = SAISON_COLORS[s];
+    const normales = cultures.filter(c => !c.perenne);
+    const perennes = cultures.filter(c =>  c.perenne);
+    return `
+    <div class="table-wrap" style="margin-bottom:16px;${isActive ? `border-left:3px solid ${couleur};` : ''}">
+      <div class="table-wrap-head" style="padding:14px 20px;background:var(--surface2)">
+        <span style="font-size:18px">${EMOJIS[s]}</span>
+        <span style="font-weight:700;color:${isActive ? couleur : 'var(--text)'};font-size:15px;margin-left:8px">
+          ${LABELS[s]}${isActive ? ' — En cours' : ''}
+        </span>
+        <span style="margin-left:auto;font-size:12px;color:var(--text-dim)">${cultures.length} cultures</span>
+      </div>
+      <div style="padding:12px 20px">
+        ${normales.length ? `
+        <div style="margin-bottom:10px">
+          <div style="font-size:11px;color:var(--text-dim);font-weight:600;margin-bottom:6px;letter-spacing:.05em">🌱 CULTURES PRINCIPALES (−15% fertilité / récolte)</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            ${normales.map(c => `<span style="font-size:12px;padding:3px 8px;border-radius:4px;background:var(--surface2);border:1px solid var(--border)">${c.nom}</span>`).join('')}
+          </div>
+        </div>` : ''}
+        ${perennes.length ? `
+        <div>
+          <div style="font-size:11px;color:var(--text-dim);font-weight:600;margin-bottom:6px;letter-spacing:.05em">🔄 CULTURES PÉRENNES — Repousse 10 min (−10% fertilité / fruit)</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            ${perennes.map(c => `<span style="font-size:12px;padding:3px 8px;border-radius:4px;background:#FFD70015;border:1px solid #FFD70033;color:#a09000">${c.nom} ↺</span>`).join('')}
+          </div>
+        </div>` : ''}
+        ${cultures.length === 0 ? '<div style="color:var(--text-dim);font-size:13px">Aucune culture en plein développement cette saison.</div>' : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  // Mécaniques globales
+  const mecaniques = `
+  <div class="table-wrap" style="padding:16px 24px;margin-top:8px">
+    <div style="font-weight:600;color:var(--gold);margin-bottom:14px;font-size:14px">📖 Mécaniques agricoles de Vyldra</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;font-size:13px">
+      <div>
+        <div style="font-weight:600;color:var(--text);margin-bottom:6px">🌱 Fertilité du sol</div>
+        <div style="color:var(--text-dim);line-height:1.7">
+          ≥ 70% — Sol riche : <strong>50% chance récolte doublée</strong><br>
+          30–70% — Sol normal : croissance normale<br>
+          ≤ 30% — Sol épuisé : <strong>cultures bloquées</strong><br>
+          <em>Vérif : clic droit avec une houe sur farmland</em>
+        </div>
+      </div>
+      <div>
+        <div style="font-weight:600;color:var(--text);margin-bottom:6px">🪣 Fertilisation & perte</div>
+        <div style="color:var(--text-dim);line-height:1.7">
+          Os broyé : <strong>+25%</strong> (ne fait plus pousser instantanément)<br>
+          Récolte principale : <strong>−15%</strong><br>
+          Fruit secondaire (pérenne) : <strong>−10%</strong><br>
+          Repos sans culture : <strong>+3% / jour Minecraft</strong>
+        </div>
+      </div>
+      <div>
+        <div style="font-weight:600;color:var(--text);margin-bottom:6px">❄️ L'Hiver & la Glace</div>
+        <div style="color:var(--text-dim);line-height:1.7">
+          L'eau peut geler dans les biomes froids<br>
+          Au Printemps : toute la glace fond sur les chunks chargés<br>
+          Hors Hiver : l'eau ne gèle plus même en biome enneigé
+        </div>
+      </div>
+      <div>
+        <div style="font-weight:600;color:var(--text);margin-bottom:6px">⏱️ Temps de pousse</div>
+        <div style="color:var(--text-dim);line-height:1.7">
+          Standard : <strong>~20 min</strong> jusqu'à maturité complète<br>
+          Melon, Citrouille, Vigne : <strong>25–30 min</strong><br>
+          Clic droit à main nue sur un plant pour vérifier l'état<br>
+          Pérennes hors saison : repousse suspendue jusqu'au retour
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+  $('page-content').innerHTML = currentBlock + saisonSelector + culturesTable + mecaniques;
+}
+
+async function setSaisonWeb(saison) {
+  try {
+    await post('/api/saison/set', { saison });
+    _saisonCache = null;
+    toast(`Saison réglée sur ${saison} — cycle synchronisé`);
+    renderSaison();
+  } catch (e) { toast(e.message, 'err'); }
+}
 
 // ── CALENDRIER ────────────────────────────────────────────────────────────────
 async function renderCalendrier() {
