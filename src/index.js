@@ -40,7 +40,7 @@ function syncMemberPerms(member) {
   } catch {}
 }
 import { enqueue, askNvidia, getQueueSize, splitResponse, buildSystemPrompt, buildVisitorPrompt, getHistory, addToHistory, updatePlayerProfile } from './utils/ia.js';
-import { postWeeklySummary, accueilNouveauMembre, relanceCommandesEnAttente, commentaireNouvelleCommande, commentaireNouvelleOffre } from './utils/ia-proactive.js';
+import { postWeeklySummary, accueilNouveauMembre, dmNouveauMarchand, relanceCommandesEnAttente, commentaireNouvelleCommande, commentaireNouvelleOffre, feliciterVendeur, checkOpportunites, checkAmbiance, relanceVendeurOffresAnciennes, narrateSaisonChange } from './utils/ia-proactive.js';
 import { startMonitoring, alerteNouvelleCommande, calcSegment, segmentEmoji } from './utils/alertes.js';
 import { moderateMessage, handleModerationAppeal, loadWhitelist, loadLibrary, seedModerationWords, registerIAChannels } from './utils/moderation.js';
 import { getForumOffresId, getSellerPostId, setSellerPostId, removeSellerPost, isSellerDone } from './utils/forum.js';
@@ -265,6 +265,16 @@ client.on('guildMemberAdd', async member => {
   accueilNouveauMembre(client, member).catch(e => console.error('[accueil]', e));
 });
 
+// ── Nouveau Marchand → DM de bienvenue IA ─────────────────────────────────────
+const ROLE_MARCHAND_ID = '1502788350665556149';
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  try {
+    const avait = oldMember.roles.cache.has(ROLE_MARCHAND_ID);
+    const a     = newMember.roles.cache.has(ROLE_MARCHAND_ID);
+    if (!avait && a) dmNouveauMarchand(newMember).catch(e => console.error('[dm-marchand]', e));
+  } catch (e) { console.error('[guildMemberUpdate]', e); }
+});
+
 // ── Handler modal ticket visiteur ─────────────────────────────────────────────
 async function handleTicketModal(interaction) {
   const pseudo   = interaction.fields.getTextInputValue('tm_pseudo');
@@ -480,6 +490,8 @@ async function handleVenteStatut(interaction, id, statut) {
       }
     } catch {}
   }
+
+  if (statut === 'accepte') feliciterVendeur(client, offre).catch(() => {});
 
   const label = statut === 'accepte' ? '✅ acceptée' : '❌ refusée';
   return interaction.editReply({ embeds: [embedSucces(`Offre **#${String(offre.id).padStart(4,'0')}** ${label}. DM envoyé au vendeur.`)] });
@@ -850,6 +862,21 @@ setInterval(() => {
 setInterval(() => {
   relanceCommandesEnAttente(client).catch(e => console.error('[relance-cmds]', e));
 }, 60 * 60_000);
+
+// Opportunités stock↔commandes — toutes les 3h
+setInterval(() => {
+  checkOpportunites(client).catch(e => console.error('[opportunites]', e));
+}, 3 * 60 * 60_000);
+
+// Ambiance / rumeurs si silence — toutes les 2h
+setInterval(() => {
+  checkAmbiance(client).catch(e => console.error('[ambiance]', e));
+}, 2 * 60 * 60_000);
+
+// DM vendeurs offres anciennes (+5j) — toutes les 12h
+setInterval(() => {
+  relanceVendeurOffresAnciennes(client).catch(e => console.error('[dm-vendeur]', e));
+}, 12 * 60 * 60_000);
 
 // ── Nettoyage automatique du salon aide (toutes les 15 min) ──────────────────
 const AIDE_CHANNEL_ID = '1503070770983604244';

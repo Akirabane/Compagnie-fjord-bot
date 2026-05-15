@@ -2,6 +2,7 @@ import { EmbedBuilder } from 'discord.js';
 import db, { stmts } from '../db/database.js';
 import { cfgGet } from './setup.js';
 import { getSaisonInfo, getCulturesParSaison, SAISON_LABELS, SAISON_EMOJIS } from './saison.js';
+import { narrateSaisonChange } from './ia-proactive.js';
 
 const COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2h entre deux alertes identiques
 
@@ -214,6 +215,7 @@ async function checkChangementSaison(client) {
       .setTimestamp();
 
     await sendAlerte(client, embed);
+    narrateSaisonChange(client, info, normales, perennes).catch(() => {});
   } catch (e) { console.error('[checkSaison]', e.message); }
 }
 

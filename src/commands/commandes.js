@@ -6,7 +6,7 @@ import { embedBase, embedErreur, embedSucces, COULEURS } from '../utils/embeds.j
 import { paginationButtons, paginate, PAGE_SIZE } from '../utils/pagination.js';
 import { refreshStockEmbed } from '../utils/setup.js';
 import { getForumCommandesId, getBuyerPostId, setBuyerPostId, removeBuyerPost, isBuyerDone } from '../utils/forum.js';
-import { commentaireNouvelleCommande } from '../utils/ia-proactive.js';
+import { commentaireNouvelleCommande, feliciterClient } from '../utils/ia-proactive.js';
 
 const STATUTS = [
   { value: 'actives',    label: '🔄 En cours',    desc: 'En attente + En cours + Prêtes' },
@@ -329,6 +329,8 @@ async function changerStatut(interaction, id, statut) {
       if (DM_MSG[statut]) await membre.send(DM_MSG[statut]);
     } catch {}
   }
+
+  if (statut === 'livree') feliciterClient(interaction.client, updated).catch(() => {});
 
   const embed = embedSucces(`Commande **#${String(id).padStart(4,'0')}** → **${statut.replace('_',' ')}**.`);
   const res   = { embeds: [embed], components: [], flags: 64 };
