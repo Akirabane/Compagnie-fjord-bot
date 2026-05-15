@@ -769,6 +769,23 @@ app.put('/api/ia/prompt', requireWrite, (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Config IA proactive ───────────────────────────────────────────────────────
+const PROACTIF_KEYS = ['IA_PROACTIF_VISITEURS_ID', 'IA_PROACTIF_DOMAINE_ID', 'IA_PROACTIF_NOBLES_ID'];
+
+app.get('/api/ia/proactif', requireAuth, (req, res) => {
+  const cfg = {};
+  for (const k of PROACTIF_KEYS) cfg[k] = cfgGet(k);
+  res.json(cfg);
+});
+
+app.put('/api/ia/proactif', requireWrite, (req, res) => {
+  const updates = req.body;
+  for (const k of PROACTIF_KEYS) {
+    if (k in updates) cfgSet(k, updates[k] ?? '');
+  }
+  res.json({ ok: true });
+});
+
 // ── Offres de vente ───────────────────────────────────────────────────────────
 app.get('/api/offres_vente', requireAuth, (req, res) => {
   const { statut } = req.query;

@@ -253,7 +253,7 @@ const PAGES = {
   offres:     { title: '🛍️ Offres de vente',         render: renderOffres },
   tresorerie: { title: '🏦 Trésorerie',              render: renderTresorerie },
   recettes:   { title: '📖 Recettes',                render: renderRecettes },
-  ia:         { title: '🤖 Config Intendant IA',     render: renderIA },
+  ia:         { title: '🤖 Config IA & Proactif',     render: renderIA },
   permissions:{ title: '🛡️ Gestion des Permissions', render: renderPermissions },
   wiki:       { title: '📚 Wiki & Commandes',        render: renderWiki },
   'ia-chat':  { title: '💬 Chat Intendant',          render: renderIAChat },
@@ -868,29 +868,49 @@ async function renderPrix() {
   await loadPrix();
 }
 
+let prixRegionActive = 'prix_skanor';
+
 async function loadPrix() {
   const params = new URLSearchParams(Object.fromEntries(Object.entries(prixFilters).filter(([,v])=>v)));
   const d = await get(`/api/prix?${params}`);
   if (!d) return;
   const catOptions = d.cats.map(c=>`<option value="${c}" ${c===prixFilters.cat?'selected':''}>${c}</option>`).join('');
-  const regionHeaders = REGIONS.map(r=>`<th class="prix-cell sortable${sortStates['prix']?.key===r.col?' sort-active':''}" onclick="setSort('prix','${r.col}','${sortStates['prix']?.key===r.col&&sortStates['prix']?.dir==='asc'?'desc':'asc'}">${r.label} <span class="sort-arrow">${sortStates['prix']?.key===r.col?(sortStates['prix'].dir==='asc'?'▲':'▼'):'⇅'}</span></th>`).join('');
-  const sorted_prix = applySort('prix', d.rows);
-  const rows = sorted_prix.map(r => {
-    const cells = REGIONS.map(reg => {
-      const v = r[reg.col];
-      return `<td class="prix-cell">
-        <span class="editable" contenteditable="true" data-id="${r.id}" data-region="${reg.col}"
-          onblur="savePrixCell(this)" onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault()}"
-        >${v??''}</span>${v===null?'<div class="prix-inconnu">inconnu</div>':''}
-      </td>`;
-    }).join('');
-    return `<tr><td><strong>${r.produit}</strong></td><td style="color:var(--text-dim)">${r.unite_base}</td><td style="color:var(--text-dim);font-size:12px">${r.categorie}</td>${cells}
-      <td><div class="actions"><button class="btn btn-sm btn-danger btn-icon" onclick="deletePrix(${r.id},'${esc(r.produit)}')">🗑</button></div></td></tr>`;
+
+  // Tabs régions
+  const regionTabs = REGIONS.map(r => {
+    const isActive = r.col === prixRegionActive;
+    const isConfigured = r.col === 'prix_skanor';
+    return `<button class="btn btn-sm ${isActive?'btn-primary':'btn-ghost'}" onclick="prixRegionActive='${r.col}';loadPrix()"
+      style="${isActive?'':'opacity:0.7'}">${r.label}${!isConfigured?' <span style="font-size:10px;opacity:0.6">N/A</span>':''}</button>`;
   }).join('');
 
+  const region = REGIONS.find(r => r.col === prixRegionActive);
+  const sorted_prix = applySort('prix', d.rows);
+  const rows = sorted_prix.map(r => {
+    const v = r[prixRegionActive];
+    const naStyle = v === null ? 'opacity:0.45' : '';
+    return `<tr style="${naStyle}">
+      <td><strong>${r.produit}</strong></td>
+      <td style="color:var(--text-dim)">${r.unite_base}</td>
+      <td style="color:var(--text-dim);font-size:12px">${r.categorie}</td>
+      <td class="prix-cell">
+        <span class="editable" contenteditable="true" data-id="${r.id}" data-region="${prixRegionActive}"
+          onblur="savePrixCell(this)" onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault()}"
+        >${v??''}</span>${v===null?'<span style="color:var(--text-dim);font-size:11px;margin-left:6px">N/A</span>':''}
+      </td>
+      <td><div class="actions"><button class="btn btn-sm btn-danger btn-icon" onclick="deletePrix(${r.id},'${esc(r.produit)}')">🗑</button></div></td>
+    </tr>`;
+  }).join('');
+
+  const naCount = sorted_prix.filter(r => r[prixRegionActive] === null).length;
+  const naWarning = naCount > 0 && prixRegionActive !== 'prix_skanor'
+    ? `<div style="background:rgba(201,168,76,0.1);border:1px solid var(--gold);border-radius:8px;padding:10px 14px;font-size:13px;color:var(--gold);margin-bottom:12px">
+        ⚠️ <strong>${naCount} prix non renseignés</strong> pour cette région. Cliquez sur une cellule N/A pour renseigner le prix.
+      </div>` : '';
+
   $('page-content').innerHTML = `
-    <div class="filter-bar">
-      <div class="search-box" style="flex:2;min-width:200px">
+    <div class="filter-bar" style="flex-wrap:wrap;gap:8px">
+      <div class="search-box" style="flex:2;min-width:180px">
         <input placeholder="Rechercher un produit…" value="${prixFilters.q}"
           oninput="prixFilters.q=this.value;clearTimeout(window._pt);window._pt=setTimeout(loadPrix,280)">
       </div>
@@ -899,11 +919,14 @@ async function loadPrix() {
       </select>
       <button class="btn btn-ghost btn-sm" onclick="prixFilters={cat:'',q:''};loadPrix()">↺ Reset</button>
     </div>
-    <p style="color:var(--text-dim);font-size:12px;margin:10px 0">💡 Cliquez sur une cellule pour modifier. Vide = inconnu.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">
+      ${regionTabs}
+    </div>
+    ${naWarning}
     <div class="table-wrap">
       <div class="table-toolbar">
-        <h3>💰 Prix comparatifs</h3>
-        <span style="color:var(--text-dim);font-size:12px">${d.rows.length} produit${d.rows.length>1?'s':''}</span>
+        <h3>${region?.label ?? ''} — Prix par produit</h3>
+        <span style="color:var(--text-dim);font-size:12px">${d.rows.length} produit${d.rows.length>1?'s':''} · ${naCount} N/A</span>
       </div>
       <div style="overflow-x:auto">
         <table>
@@ -911,12 +934,13 @@ async function loadPrix() {
             ${th('prix','produit','Produit')}
             ${th('prix','unite_base','Unité')}
             ${th('prix','categorie','Catégorie')}
-            ${regionHeaders}<th></th>
+            <th>Prix (bronze)</th><th></th>
           </tr></thead>
-          <tbody>${rows||'<tr><td colspan="9"><div class="empty"><div class="empty-icon">💰</div><div>Aucun résultat</div></div></td></tr>'}</tbody>
+          <tbody>${rows||'<tr><td colspan="5"><div class="empty"><div class="empty-icon">💰</div><div>Aucun résultat</div></div></td></tr>'}</tbody>
         </table>
       </div>
-    </div>`;
+    </div>
+    <p style="color:var(--text-dim);font-size:12px;margin-top:8px">💡 Cliquez sur une cellule pour modifier le prix. Laissez vide pour marquer N/A.</p>`;
 }
 
 async function savePrixCell(el) {
@@ -1568,45 +1592,147 @@ async function deleteRecette(id,nom){
 // ── IA ────────────────────────────────────────────────────────────────────────
 async function renderIA() {
   $('topbar-actions').innerHTML =
-    `<button class="btn btn-ghost" onclick="loadIAPrompt()">↺ Actualiser le preview</button>`;
-  await loadIAPrompt();
+    `<button class="btn btn-ghost" onclick="loadIAPrompt()">↺ Actualiser</button>`;
+  $('page-content').innerHTML = `<div class="empty"><div class="spinner"></div></div>`;
+  await Promise.all([loadIAPrompt(), loadIAProactif()]);
 }
 
 async function loadIAPrompt() {
   const data = await get('/api/ia/prompt');
   if (!data) return;
-
-  $('page-content').innerHTML = `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start">
-
+  const promptHtml = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start;margin-bottom:24px">
       <div class="table-wrap" style="padding:20px 24px">
         <h3 style="margin:0 0 4px">✏️ Pré-prompt de base</h3>
         <p style="color:var(--text-dim);font-size:12px;margin:0 0 14px;line-height:1.6">
           Instructions permanentes envoyées à l'IA. Les données en temps réel (stock, trésor, commandes) sont <strong style="color:var(--gold)">injectées automatiquement</strong> après ce texte à chaque message.
         </p>
         <textarea id="ia-base-prompt"
-          style="width:100%;box-sizing:border-box;height:360px;resize:vertical;font-family:monospace;font-size:12px;line-height:1.65;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:12px;outline:none"
+          style="width:100%;box-sizing:border-box;height:320px;resize:vertical;font-family:monospace;font-size:12px;line-height:1.65;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:12px;outline:none"
         >${escHtml(data.base)}</textarea>
         <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
           <button class="btn btn-primary" onclick="saveIAPrompt()">💾 Sauvegarder</button>
           <button class="btn btn-ghost" onclick="resetIAPrompt(${JSON.stringify(data.default)})" title="Remettre le prompt d'origine">↺ Réinitialiser</button>
         </div>
       </div>
-
       <div class="table-wrap" style="padding:20px 24px">
-        <h3 style="margin:0 0 4px">👁️ Prompt complet envoyé (preview temps réel)</h3>
+        <h3 style="margin:0 0 4px">👁️ Prompt complet envoyé (preview)</h3>
         <p style="color:var(--text-dim);font-size:12px;margin:0 0 14px;line-height:1.6">
           Aperçu exact de ce que l'IA reçoit à chaque message, avec les données actuelles injectées.
         </p>
         <textarea readonly
-          style="width:100%;box-sizing:border-box;height:360px;resize:vertical;font-family:monospace;font-size:11px;line-height:1.65;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-dim);padding:12px;cursor:default;outline:none"
+          style="width:100%;box-sizing:border-box;height:320px;resize:vertical;font-family:monospace;font-size:11px;line-height:1.65;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-dim);padding:12px;cursor:default;outline:none"
         >${escHtml(data.preview)}</textarea>
         <p style="font-size:11px;color:var(--text-dim);margin-top:8px">
-          🔄 Stock, trésor et commandes sont mis à jour en temps réel à chaque message Discord reçu dans le salon IA.
+          🔄 Stock, trésor et commandes sont mis à jour en temps réel à chaque message Discord.
         </p>
       </div>
-
     </div>`;
+
+  const existing = $('ia-prompt-section');
+  if (existing) { existing.innerHTML = promptHtml; }
+  else {
+    const pc = $('page-content');
+    if (!pc.querySelector('#ia-prompt-section')) {
+      const div = document.createElement('div');
+      div.id = 'ia-prompt-section';
+      div.innerHTML = promptHtml;
+      pc.prepend(div);
+    }
+  }
+}
+
+const PROACTIF_LABELS = {
+  IA_PROACTIF_VISITEURS_ID: { label: '🔮 Oracle du Fjord', desc: 'Salon visiteurs — accueil, rumeurs, nouvelles commandes visibles' },
+  IA_PROACTIF_DOMAINE_ID:   { label: '📋 Chroniques du Domaine', desc: 'Salon membres — relances, opportunités, offres, félicitations vendeurs' },
+  IA_PROACTIF_NOBLES_ID:    { label: '⚜️ Conseil des Seigneurs', desc: 'Salon nobles — rapports stratégiques, offres à fort enjeu' },
+};
+
+async function loadIAProactif() {
+  const cfg = await get('/api/ia/proactif');
+  if (!cfg) return;
+
+  const fields = Object.entries(PROACTIF_LABELS).map(([key, { label, desc }]) => {
+    const val = cfg[key] ?? '';
+    const configured = val && val.length > 5;
+    return `
+      <div class="field" style="grid-column:span 1">
+        <label style="display:flex;align-items:center;gap:8px">
+          ${label}
+          <span style="font-size:10px;padding:2px 7px;border-radius:99px;font-weight:600;
+            background:${configured?'rgba(61,214,140,0.15)':'rgba(248,113,113,0.1)'};
+            color:${configured?'#3dd68c':'#f87171'}">
+            ${configured?'✓ Configuré':'Non configuré'}
+          </span>
+        </label>
+        <p style="color:var(--text-dim);font-size:11px;margin:2px 0 6px">${desc}</p>
+        <input id="proactif-${key}" value="${escHtml(val)}" placeholder="ID du salon Discord…"
+          style="font-family:monospace;font-size:13px">
+      </div>`;
+  }).join('');
+
+  const behaviours = [
+    { icon:'🌊', label:'Rumeurs & ambiance', freq:'toutes les 2h si silence +6h' },
+    { icon:'📜', label:'Résumé quotidien', freq:'tous les jours à 16h' },
+    { icon:'🍂', label:'Narration changement de saison', freq:'à chaque saison' },
+    { icon:'✅', label:'Félicitations livraison client', freq:'à chaque livraison' },
+    { icon:'🤝', label:'Félicitations offre acceptée', freq:'à chaque acceptation' },
+    { icon:'💡', label:'Opportunités stock↔commandes', freq:'toutes les 3h' },
+    { icon:'⏳', label:'Relance commandes +48h', freq:'toutes les heures' },
+    { icon:'🛒', label:'Commentaire nouvelle commande', freq:'à chaque commande notable' },
+    { icon:'🏪', label:'Commentaire nouvelle offre', freq:'à chaque offre notable' },
+    { icon:'🛶', label:'Accueil nouveau membre', freq:'à l\'arrivée' },
+    { icon:'⚓', label:'DM bienvenue nouveau Marchand', freq:'à l\'attribution du rôle' },
+    { icon:'📦', label:'DM relance client commande +48h', freq:'toutes les heures' },
+    { icon:'📋', label:'DM relance vendeur offre +5j', freq:'toutes les 12h' },
+  ].map(b => `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+    <span style="font-size:18px;width:28px;text-align:center">${b.icon}</span>
+    <div style="flex:1"><div style="font-size:13px;font-weight:500">${b.label}</div><div style="font-size:11px;color:var(--text-dim)">${b.freq}</div></div>
+  </div>`).join('');
+
+  const proactifHtml = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start">
+      <div class="table-wrap" style="padding:20px 24px">
+        <h3 style="margin:0 0 4px">🤖 Salons IA Proactifs</h3>
+        <p style="color:var(--text-dim);font-size:12px;margin:0 0 16px;line-height:1.6">
+          L'IA publie automatiquement dans ces 3 salons Discord selon les événements. Collez l'ID du salon (clic droit → Copier l'identifiant).
+        </p>
+        <div class="form-grid" style="grid-template-columns:1fr">${fields}</div>
+        <button class="btn btn-primary" style="margin-top:16px" onclick="saveIAProactif()">💾 Sauvegarder les salons</button>
+      </div>
+      <div class="table-wrap" style="padding:20px 24px">
+        <h3 style="margin:0 0 4px">📡 Comportements autonomes actifs</h3>
+        <p style="color:var(--text-dim);font-size:12px;margin:0 0 12px;line-height:1.6">
+          L'IA décide seule de la pertinence, du ton et du salon cible pour chaque événement.
+        </p>
+        ${behaviours}
+        <p style="font-size:11px;color:var(--text-dim);margin-top:12px">
+          💡 Cooldown 2h par salon pour éviter le spam. Le routeur IA filtre les événements banals.
+        </p>
+      </div>
+    </div>`;
+
+  const pc = $('page-content');
+  let proactifSection = pc.querySelector('#ia-proactif-section');
+  if (!proactifSection) {
+    proactifSection = document.createElement('div');
+    proactifSection.id = 'ia-proactif-section';
+    pc.appendChild(proactifSection);
+  }
+  proactifSection.innerHTML = proactifHtml;
+}
+
+async function saveIAProactif() {
+  const body = {};
+  for (const key of Object.keys(PROACTIF_LABELS)) {
+    const el = $(`proactif-${key}`);
+    if (el) body[key] = el.value.trim();
+  }
+  try {
+    await put('/api/ia/proactif', body);
+    toast('Salons proactifs sauvegardés');
+    loadIAProactif();
+  } catch(e) { toast(e.message, 'error'); }
 }
 
 async function saveIAPrompt() {
@@ -2304,14 +2430,15 @@ const WIKI_ENTRIES = [
     cat: 'stock', tags: ['bot','prix','regions','marche'],
     icon: '💰', title: '/prix — Prix régionaux',
     tag: 'Bot', tagClass: 'bot',
-    desc: 'Tableau comparatif des prix dans les 5 régions commerciales : PDM, Rhême, Skanor, Byb-Razab, Yuhang.',
+    desc: 'Tableau des prix par région. Actuellement seule Skanor est renseignée — les autres régions (PDM, Rhême, Byb-Razad, Yuhang) sont en attente de données (N/A).',
     usage: '/prix voir  |  /prix modifier  |  /prix ajouter  |  /prix supprimer',
     options: [
-      ['voir','Tableau comparatif paginé'],
-      ['modifier','Modifier un prix régional existant'],
-      ['ajouter','Ajouter un nouveau produit au tableau'],
-      ['supprimer','Supprimer un produit'],
+      ['voir','Sélectionner une région puis une catégorie — affiche un embed unique pour cette région'],
+      ['modifier','Modifier un prix régional existant pour un produit'],
+      ['ajouter','Ajouter un nouveau produit au tableau (toutes régions)'],
+      ['supprimer','Supprimer un produit du tableau'],
     ],
+    note: 'La webapp (Prix & Marchés) permet d\'éditer les prix directement dans le tableau, région par région via les onglets.',
   },
   {
     cat: 'stock', tags: ['bot','marche','fluctuation'],
@@ -2409,6 +2536,37 @@ const WIKI_ENTRIES = [
       ['Vendeur','Propose ses ressources avec quantité, prix souhaité et note'],
       ['Marchand','Accepte ou refuse depuis la page "Offres de vente" de la webapp'],
       ['Post forum','1 post par vendeur, mis à jour automatiquement'],
+    ],
+  },
+  // ── IA Proactive ──
+  {
+    cat: 'ia', tags: ['bot','ia','proactif','salons','autonome'],
+    icon: '🤖', title: '/salons-ia — Salons IA proactifs',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'Configure les 3 salons Discord dans lesquels l\'IA publie des messages de façon autonome. L\'IA décide seule de la pertinence, du ton et du salon cible selon l\'événement.',
+    usage: '/salons-ia visiteurs  |  /salons-ia domaine  |  /salons-ia nobles  |  /salons-ia info',
+    options: [
+      ['🔮 Oracle du Fjord','Salon Visiteurs — accueil nouveaux membres, rumeurs, nouvelles commandes publiques'],
+      ['📋 Chroniques du Domaine','Salon Membres — relances commandes, opportunités stock↔commandes, félicitations vendeurs'],
+      ['⚜️ Conseil des Seigneurs','Salon Nobles — rapports stratégiques, offres à fort enjeu, résumés'],
+    ],
+    note: 'Configurable aussi depuis la webapp → Système → Config IA → section "Salons IA Proactifs". Cooldown 2h par salon pour éviter le spam.',
+  },
+  {
+    cat: 'ia', tags: ['bot','ia','proactif','autonome','ambiance'],
+    icon: '📡', title: 'Comportements proactifs — Vue d\'ensemble',
+    tag: 'Bot', tagClass: 'bot',
+    desc: 'L\'IA publie automatiquement dans les 3 salons proactifs selon les événements du serveur. Un routeur IA filtre les événements banals et adapte le ton à chaque section.',
+    usage: 'Automatique — aucune intervention requise',
+    options: [
+      ['Résumé quotidien 16h','Chiffres des 7 derniers jours narrés en RP, ton adapté par section'],
+      ['Ambiance & rumeurs','Si silence +6h dans un salon, l\'IA lance une rumeur ou actu marché'],
+      ['Saison','Narration RP immersive à chaque changement de saison (3 versions : visiteurs/domaine/nobles)'],
+      ['Félicitations','Vendeur (offre acceptée) → Domaine · Client (livraison) → Visiteurs'],
+      ['Opportunités','Détecte stock dispo + commandes en attente pour la même ressource → alerte Domaine'],
+      ['Relances','Commandes +48h : DM client + alerte Domaine · Offres +5j : DM vendeur'],
+      ['Nouvelles commandes/offres','Routeur IA évalue si ça mérite un post et dans quel(s) salon(s)'],
+      ['DM Marchand','Nouveau membre avec rôle Compagnie → DM de bienvenue personnalisé'],
     ],
   },
   // ── Tarifs ──
