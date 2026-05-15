@@ -270,6 +270,15 @@ db.exec(`
 `);
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS moderation_words (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    terme     TEXT NOT NULL UNIQUE,
+    tier      INTEGER DEFAULT 1,
+    categorie TEXT DEFAULT 'insulte'
+  );
+`);
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS moderation_whitelist (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     terme     TEXT NOT NULL UNIQUE,

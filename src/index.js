@@ -41,7 +41,7 @@ function syncMemberPerms(member) {
 }
 import { enqueue, askNvidia, getQueueSize, splitResponse, buildSystemPrompt, buildVisitorPrompt, getHistory, addToHistory, updatePlayerProfile } from './utils/ia.js';
 import { startMonitoring, alerteNouvelleCommande, calcSegment, segmentEmoji } from './utils/alertes.js';
-import { moderateMessage, handleModerationAppeal, loadWhitelist, registerIAChannels } from './utils/moderation.js';
+import { moderateMessage, handleModerationAppeal, loadWhitelist, loadLibrary, seedModerationWords, registerIAChannels } from './utils/moderation.js';
 import { getForumOffresId, getSellerPostId, setSellerPostId, removeSellerPost, isSellerDone } from './utils/forum.js';
 import {
   handleMetiersManageBase, handleMetiersManageSpec,
@@ -248,7 +248,9 @@ client.once('clientReady', async () => {
   startMonitoring(client);
   setInterval(() => drainActionQueue(client).catch(() => {}), 5000);
 
-  // Modération — charger whitelist + exclure canaux IA
+  // Modération — seeder bibliothèque, charger en mémoire, whitelist + exclure canaux IA
+  await seedModerationWords();
+  loadLibrary();
   loadWhitelist();
   registerIAChannels(cfgGet('AI_CHANNEL_ID'), cfgGet('AI_CHANNEL_VISITEURS_ID'));
 });
