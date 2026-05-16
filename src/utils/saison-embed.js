@@ -100,7 +100,7 @@ async function getOrCreateSaisonChannel(client) {
   if (!guild) return null;
 
   const newCh = await guild.channels.create({
-    name: 'saison',
+    name: '🌾・saison',
     type: ChannelType.GuildText,
     parent: categoryId,
     topic: 'Saison en cours sur Vyldra — mis à jour automatiquement',
