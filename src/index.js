@@ -10,6 +10,7 @@ import { handleFiltreSelect as cmdFiltre, handlePage as cmdPage, handleStatutBtn
 import { handleCatSelect as stockCat, handlePage as stockPage }                                    from './commands/stock.js';
 import { handleProfSelect as recProf, handleNivSelect as recNiv, handlePage as recPage, handleDetail as recDetail } from './commands/recette.js';
 import { handleNav as tarifsNav } from './commands/tarifs.js';
+import { handleModal as xpHandleModal } from './commands/xp.js';
 import { setupChannels, cfgGet, cfgSet, refreshStockEmbed, OWNER_ID } from './utils/setup.js';
 import { approveRequest, refuseRequest, executeActions, drainActionQueue } from './utils/code-agent.js';
 import { canWriteAny, hasPermission, getEffectivePermissions, detectLevelFromRoleNames, upsertUser, LEVEL_LABELS, DEFAULT_PERMISSIONS, PERMISSION_LABELS } from './utils/permissions.js';
@@ -40,7 +41,8 @@ function syncMemberPerms(member) {
   } catch {}
 }
 import { enqueue, askNvidia, getQueueSize, splitResponse, buildSystemPrompt, buildVisitorPrompt, getHistory, addToHistory, updatePlayerProfile } from './utils/ia.js';
-import { postWeeklySummary, accueilNouveauMembre, dmNouveauMarchand, relanceCommandesEnAttente, commentaireNouvelleCommande, commentaireNouvelleOffre, feliciterVendeur, checkOpportunites, checkAmbiance, relanceVendeurOffresAnciennes, narrateSaisonChange } from './utils/ia-proactive.js';
+import { postWeeklySummary, accueilNouveauMembre, dmNouveauMarchand, relanceCommandesEnAttente, commentaireNouvelleCommande, commentaireNouvelleOffre, feliciterVendeur, checkOpportunites, checkAmbiance, relanceVendeurOffresAnciennes } from './utils/ia-proactive.js';
+import { updateSaisonEmbed, cleanOldSaisonEmbeds } from './utils/saison-embed.js';
 import { startMonitoring, alerteNouvelleCommande, calcSegment, segmentEmoji } from './utils/alertes.js';
 import { moderateMessage, handleModerationAppeal, loadWhitelist, loadLibrary, seedModerationWords, registerIAChannels } from './utils/moderation.js';
 import { getForumOffresId, getSellerPostId, setSellerPostId, removeSellerPost, isSellerDone } from './utils/forum.js';
@@ -168,7 +170,7 @@ client.on('postIAEmbed', (type, channelId) => postIAEmbedForChannel(client, type
 // ── Pages du salon d'aide (navigation unique) ─────────────────────────────────
 const AIDE_PAGES = [
   {
-    title: '📖 Commandes — Membres & Visiteurs (1/3)',
+    title: '📖 Commandes — Membres & Visiteurs (1/4)',
     color: 0xC9A84C,
     fields: [
       { name: '⚓ `/commander`',  value: 'Passer une commande de ressources auprès de la Compagnie.' },
@@ -179,10 +181,13 @@ const AIDE_PAGES = [
       { name: '🎒 `/macommande`', value: 'Suivre l\'état de vos commandes en cours auprès de la Compagnie.' },
       { name: '💰 `/prix`',       value: 'Tableau de prix comparatif entre toutes les régions de Vyldra.' },
       { name: '⚒️ `/metiers`',    value: 'Choisir ou administrer les rôles métiers disponibles sur le serveur.' },
+      { name: '⚗️ `/xp`',         value: 'Calculateur XP de métier : indique ta situation, ta recette et ton inventaire — l\'IA calcule les crafts nécessaires, les matériaux manquants et le temps estimé.' },
+      { name: '🌾 `/saison`',     value: 'Consulter la saison RP en cours, les cultures actives et les bonus de production.' },
+      { name: '👤 `/profil`',     value: 'Voir le profil marchand d\'un membre : rôles, réputation et historique.' },
     ],
   },
   {
-    title: '🤖 Commandes IA & Avancées (2/3)',
+    title: '🤖 Commandes IA & Avancées (2/4)',
     color: 0x3dd68c,
     fields: [
       { name: '🏰 Intendant IA',      value: 'Écrivez dans le salon village ou visiteurs pour parler à l\'Intendant en temps réel (stock, prix, lore…).' },
@@ -191,11 +196,12 @@ const AIDE_PAGES = [
       { name: '📜 `/contrat`',         value: 'Créer, consulter, accepter ou changer le statut d\'un contrat commercial entre joueurs.' },
       { name: '💬 `/recap`',           value: 'Voir ou effacer votre historique de conversation avec l\'Intendant IA (25 messages par joueur).' },
       { name: '🧾 `/inventaire`',      value: 'Consulter votre profil client : historique, réputation, segment (VIP/Régulier/Risque).' },
-      { name: '🌐 Tableau de bord',    value: '**[fjord.zenkai-police.tech](https://fjord.zenkai-police.tech/)** — Interface web complète : stock, commandes, trésorerie, IA, contrats, wiki.' },
+      { name: '🛠️ `/modifier`',        value: 'Soumettre une demande de modification ou d\'amélioration au bot via l\'IA.' },
+      { name: '🌐 Tableau de bord',    value: '**[fjord.zenkai-police.tech](https://fjord.zenkai-police.tech/)** — Interface web complète : stock, commandes, trésorerie, IA, contrats, calculateur XP, wiki.' },
     ],
   },
   {
-    title: '🛡️ Commandes Marchands & Administration (3/3)',
+    title: '🛡️ Commandes Marchands & Administration (3/4)',
     color: 0x1A3A5C,
     fields: [
       { name: '📋 `/commandes`',  value: 'Gérer les commandes clients : lister, consulter, changer le statut, marquer livrée.' },
@@ -206,6 +212,17 @@ const AIDE_PAGES = [
       { name: '🔔 `/alertes`',    value: 'Configurer le salon des alertes Intelligence Économique (stock critique, grosses commandes VIP…).' },
       { name: '💬 `/forum`',      value: 'Configurer les forums Discord pour les commandes acheteurs et offres vendeurs.' },
       { name: '🤖 `/ia`',         value: 'Configurer les salons de l\'Intendant IA (membres et visiteurs).' },
+      { name: '📡 `/salons-ia`',  value: 'Configurer les salons proactifs de l\'IA (visiteurs, domaine, nobles).' },
+    ],
+  },
+  {
+    title: '📋 Résumé rapide — Toutes les commandes (4/4)',
+    color: 0x6b7a96,
+    fields: [
+      { name: '👤 Membres', value: '`/commander` `/catalogue` `/tarifs` `/recette` `/bourse` `/macommande` `/prix` `/metiers` `/xp` `/saison` `/profil` `/contrat` `/recap` `/inventaire`' },
+      { name: '🤖 IA & Outils', value: '`/analyser` `/negocier` `/modifier`\nIntendant IA (salons village & visiteurs)' },
+      { name: '🛡️ Marchands', value: '`/commandes` `/stock` `/marche` `/annonce` `/roles` `/alertes` `/forum` `/ia` `/salons-ia`' },
+      { name: '🌐 Web', value: '[fjord.zenkai-police.tech](https://fjord.zenkai-police.tech/) — Dashboard, stock, prix, commandes, trésorerie, recettes, contrats, saisons, calculateur XP, journaux, wiki.' },
     ],
   },
 ];
@@ -246,6 +263,8 @@ client.once('clientReady', async () => {
   await postIAEmbedForChannel(client, 'village',   cfgGet('AI_CHANNEL_ID'));
   await postIAEmbedForChannel(client, 'visiteurs', cfgGet('AI_CHANNEL_VISITEURS_ID'));
   await postAideEmbed(client);
+  cleanOldSaisonEmbeds(client).catch(() => {});
+  updateSaisonEmbed(client).catch(() => {});
   startMonitoring(client);
   setInterval(() => drainActionQueue(client).catch(() => {}), 5000);
 
@@ -593,8 +612,9 @@ client.on('interactionCreate', async interaction => {
 
     // ── Modals ────────────────────────────────────────────────────────────────
     if (interaction.isModalSubmit()) {
-      if (interaction.customId === 'ticket_modal') return await handleTicketModal(interaction);
-      if (interaction.customId === 'vente_modal')  return await handleVenteModal(interaction);
+      if (interaction.customId === 'ticket_modal')  return await handleTicketModal(interaction);
+      if (interaction.customId === 'vente_modal')   return await handleVenteModal(interaction);
+      if (interaction.customId === 'xp_calc_modal') return await xpHandleModal(interaction);
       return;
     }
 

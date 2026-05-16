@@ -125,30 +125,6 @@ export async function postWeeklySummary(client) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// FEATURE 2 — Narration RP d'un changement de saison
-// ═════════════════════════════════════════════════════════════════════════════
-export async function narrateSaisonChange(client, info, normales, perennes) {
-  const contexte = `La saison ${info.label} commence sur Vyldra. Cultures de saison : ${normales.join(', ') || 'aucune'}. Cultures pérennes actives : ${perennes.join(', ') || 'aucune'}. Prochaine saison : ${info.prochaineLabel}.`;
-
-  const COULEURS_SAISON = { printemps: 0x90EE90, ete: 0xFFD700, automne: 0xD2691E, hiver: 0xADD8E6 };
-  const color = COULEURS_SAISON[info.saison] ?? 0xC9A84C;
-
-  const [nDomaine, nNobles, nVisiteurs] = await Promise.all([
-    narrateIA(`${contexte}\nRédige une annonce RP immersive pour les marchands du Domaine sur ce changement de saison et ses implications commerciales.`,
-      `Tu es l'Intendant de la Compagnie du Fjord (Vyldra, RP Viking). Prose viking, 4-5 phrases, mentionne les ressources et opportunités.`),
-    narrateIA(`${contexte}\nRédige une note stratégique pour les Nobles sur ce changement de saison : quels impacts sur l'économie de la Compagnie ?`,
-      `Tu es le Conseiller Principal de la Compagnie du Fjord. Ton formel et stratégique, 3-4 phrases.`),
-    narrateIA(`${contexte}\nRédige une annonce publique poétique sur le changement de saison à Vyldra, pour les visiteurs et voyageurs.`,
-      `Tu es le héraut de la Compagnie du Fjord. Ton lyrique et épique viking, 3-4 phrases, immersif.`),
-  ]);
-
-  const titre = `${info.emoji} ${info.label} s'éveille sur Vyldra`;
-  if (nDomaine)   await postInSection(client, 'domaine',   [buildEmbed(titre, nDomaine,   'domaine',   'Intendant — Annonce Saisonnière')], true);
-  if (nNobles)    await postInSection(client, 'nobles',    [buildEmbed(titre, nNobles,    'nobles',    'Conseiller — Note Stratégique')], true);
-  if (nVisiteurs) await postInSection(client, 'visiteurs', [buildEmbed(titre, nVisiteurs, 'visiteurs', 'La Compagnie du Fjord — Vyldra')], true);
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
 // FEATURE 3 — Accueil nouveau membre / nouveau Marchand
 // ═════════════════════════════════════════════════════════════════════════════
 export async function accueilNouveauMembre(client, member) {
