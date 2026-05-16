@@ -4,8 +4,8 @@ export const SAISONS       = ['printemps', 'ete', 'automne', 'hiver'];
 export const SAISON_EMOJIS = { printemps: '🌸', ete: '☀️', automne: '🍂', hiver: '❄️' };
 export const SAISON_LABELS = { printemps: 'Printemps', ete: 'Été', automne: 'Automne', hiver: 'Hiver' };
 
-// 1 jour Minecraft = 20 min réel → 4 jours par saison = 80 min
-const DUREE_SAISON_MS = 4 * 20 * 60 * 1000;
+// 1 saison = 2h réelles
+const DUREE_SAISON_MS = 4 * 60 * 60 * 1000;
 
 export function getSaisonCourante() {
   const actuelle = stmts.cfgGet.get('SAISON_ACTUELLE')?.value;
