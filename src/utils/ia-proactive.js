@@ -119,9 +119,19 @@ export async function postWeeklySummary(client) {
     .setTitle(`📜 Chronique du jour — ${date}`).setDescription(texte)
     .setColor(color).setFooter({ text: footer }).setTimestamp();
 
-  if (nDomaine)   await postInSection(client, 'domaine',   [mkEmbed(nDomaine,   'Rapport — Membres de la Compagnie',   0xC9A84C)], true);
-  if (nNobles)    await postInSection(client, 'nobles',    [mkEmbed(nNobles,    'Rapport aux Seigneurs',               0x8B0000)], true);
-  if (nVisiteurs) await postInSection(client, 'visiteurs', [mkEmbed(nVisiteurs, 'La Compagnie du Fjord — Aujourd\'hui', 0x5865F2)], true);
+  const postChronique = async (section, embed, cfgKey) => {
+    const channel = await getSectionChannel(client, section);
+    if (!channel?.isTextBased()) return;
+    const oldId = cfgGet(cfgKey);
+    if (oldId) await channel.messages.fetch(oldId).then(m => m.delete()).catch(() => {});
+    const msg = await channel.send({ embeds: [embed] }).catch(() => null);
+    if (msg) db.prepare("INSERT OR REPLACE INTO config (key,value) VALUES (?,?)").run(cfgKey, msg.id);
+    lastPostPerSection[section] = Date.now();
+  };
+
+  if (nDomaine)   await postChronique('domaine',   mkEmbed(nDomaine,   'Rapport — Membres de la Compagnie',   0xC9A84C), 'CHRONIQUE_MSG_DOMAINE');
+  if (nNobles)    await postChronique('nobles',    mkEmbed(nNobles,    'Rapport aux Seigneurs',               0x8B0000), 'CHRONIQUE_MSG_NOBLES');
+  if (nVisiteurs) await postChronique('visiteurs', mkEmbed(nVisiteurs, 'La Compagnie du Fjord — Aujourd\'hui', 0x5865F2), 'CHRONIQUE_MSG_VISITEURS');
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
